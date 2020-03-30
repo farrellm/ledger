@@ -1,0 +1,7 @@
+backend-result
+frontend-result
+ghc-frontent-result
+.stack-work/
+*~
+stack.yaml.lock
+dist-*/

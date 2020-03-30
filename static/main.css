@@ -1,0 +1,17 @@
+textarea {
+    width: 100%;
+    resize: none;
+}
+
+.CodeMirror {
+  border: 1px solid #eee;
+  height: auto;
+}
+
+.card:not(:last-child) {
+    margin-bottom: 0.5rem;
+}
+
+.card-content {
+    padding: 0 0.5rem;
+}
