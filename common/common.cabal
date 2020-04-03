@@ -21,6 +21,8 @@ library
   -- other-modules:
   -- other-extensions:
   build-depends:       base >=4.12 && <4.14
+                     , aeson
+                     , casing
                      , relude
   hs-source-dirs:      src
   default-language:    Haskell2010

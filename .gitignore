@@ -1,6 +1,6 @@
 backend-result
 frontend-result
-ghc-frontent-result
+ghc-frontend-result
 .stack-work/
 *~
 stack.yaml.lock

@@ -11,7 +11,6 @@ import Data.Aeson
   ( FromJSON (..),
     ToJSON (..),
     genericParseJSON,
-    genericToEncoding,
     genericToJSON,
   )
 import Data.Aeson.Types ((.:), withObject)
@@ -46,6 +45,34 @@ newtype ShutdownContent
 data HeartbeatContent = HeartbeatContent
   deriving (Generic, Show)
 
+data KernelInfoRequest = KernelInfoRequest
+  deriving (Generic, Show)
+
+data KernelInfoReply
+  = KernelInfoReply
+      { _protocolVersion :: Text,
+        _implementation :: Text,
+        _implementationVersion :: Text,
+        _languageInfo :: LanguageInfo,
+        _banner :: Text,
+        _helpLinks :: Maybe [HelpLink]
+      }
+  deriving (Generic, Show)
+
+data LanguageInfo
+  = LanguageInfo
+      { _name :: Text,
+        _version :: Text
+      }
+  deriving (Generic, Show)
+
+data HelpLink
+  = HelpLink
+      { _text :: Text,
+        _url :: Text
+      }
+  deriving (Generic, Show)
+
 type family MsgContent m r = res | res -> m r where
   MsgContent 'Execute 'Request = ExecuteRequest
   MsgContent 'Execute 'Reply = Reply ExecuteReply
@@ -53,6 +80,8 @@ type family MsgContent m r = res | res -> m r where
   MsgContent 'Shutdown 'Reply = Reply ShutdownContent
   MsgContent 'Heartbeat 'Request = HeartbeatContent
   MsgContent 'Heartbeat 'Reply = Void
+  MsgContent 'KernelInfo 'Request = KernelInfoRequest
+  MsgContent 'KernelInfo 'Reply = Reply KernelInfoReply
 
 data ErrorReply
   = ErrorReply
@@ -63,16 +92,13 @@ data ErrorReply
   deriving (Generic, Show)
 
 data Reply a
-  = Ok a
-  | Error ErrorReply
-  | Abort (Map Text Text)
+  = ReplyOk a
+  | ReplyError ErrorReply
+  | ReplyAbort (Map Text Text)
   deriving (Generic, Show)
 
 instance ToJSON ExecuteRequest where
-
   toJSON = genericToJSON customOptions
-
-  toEncoding = genericToEncoding customOptions
 
 instance FromJSON ExecuteReply where
   parseJSON = genericParseJSON customOptions
@@ -92,12 +118,24 @@ instance FromJSON HeartbeatContent where
 instance FromJSON ErrorReply where
   parseJSON = genericParseJSON customOptions
 
+instance ToJSON KernelInfoRequest where
+  toJSON = genericToJSON customOptions
+
+instance FromJSON KernelInfoReply where
+  parseJSON = genericParseJSON customOptions
+
+instance FromJSON LanguageInfo where
+  parseJSON = genericParseJSON customOptions
+
+instance FromJSON HelpLink where
+  parseJSON = genericParseJSON customOptions
+
 instance (FromJSON a) => FromJSON (Reply a) where
   parseJSON j = flip (withObject "Reply") j $ \o -> do
     s <- o .: "status"
-    if  | s == A.String "ok" -> Ok <$> parseJSON (A.Object o)
-        | s == A.String "error" -> Error <$> parseJSON (A.Object o)
-        | otherwise -> Abort <$> parseJSON (A.Object o)
+    if  | s == A.String "ok" -> ReplyOk <$> parseJSON (A.Object o)
+        | s == A.String "error" -> ReplyError <$> parseJSON (A.Object o)
+        | otherwise -> ReplyAbort <$> parseJSON (A.Object o)
 
 makeFieldsNoPrefix ''ExecuteRequest
 
@@ -137,11 +175,20 @@ data ResultContent
       }
   deriving (Generic, Show)
 
+data ErrorContent
+  = ErrorContent
+      { _traceback :: [Text],
+        _ename :: Text,
+        _evalue :: Text
+      }
+  deriving (Generic, Show)
+
 type family IOPubContent m = res | res -> m where
   IOPubContent 'Stream = StreamContent
   IOPubContent 'Status = StatusContent
   IOPubContent 'ExecuteInput = InputContent
   IOPubContent 'ExecuteResult = ResultContent
+  IOPubContent 'Error = ErrorContent
 
 instance FromJSON StreamContent where
   parseJSON = genericParseJSON customOptions
@@ -155,6 +202,9 @@ instance FromJSON InputContent where
 instance FromJSON ResultContent where
   parseJSON = genericParseJSON customOptions
 
+instance FromJSON ErrorContent where
+  parseJSON = genericParseJSON customOptions
+
 makeFieldsNoPrefix ''StreamContent
 
 makeFieldsNoPrefix ''StatusContent
@@ -162,3 +212,5 @@ makeFieldsNoPrefix ''StatusContent
 makeFieldsNoPrefix ''InputContent
 
 makeFieldsNoPrefix ''ResultContent
+
+makeFieldsNoPrefix ''ErrorContent

@@ -6,25 +6,23 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-deprecations #-}
 
-module Jupyter where
-
-import Control.Concurrent.Async.Lifted (race)
-import Control.Concurrent.Chan.Lifted
-import Control.Concurrent.Lifted (threadDelay)
-import Control.Concurrent.MVar.Lifted (modifyMVar_, withMVar)
-import Control.Exception.Lifted
-  ( bracket,
-    handle,
+module Jupyter
+  ( runKernelName,
   )
+where
+
+import Common
+import Control.Concurrent.Async.Lifted (race)
+import Control.Concurrent.Chan.Lifted (Chan, newChan, readChan, writeChan)
+import Control.Concurrent.Lifted (fork)
+import Control.Concurrent.MVar.Lifted (modifyMVar_, withMVar)
+import Control.Exception.Lifted (bracket, handle)
 import Control.Lens
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Aeson (eitherDecodeFileStrict')
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.Map as M
-import Data.Singletons
-  ( SingI,
-    withSing,
-  )
+import Data.Singletons (SingI, withSing)
 import Data.Some (Some (..))
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, getCurrentTime)
@@ -42,10 +40,10 @@ import System.Directory
 import System.FilePath ((</>))
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempDirectory)
-import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.User (getEffectiveUserName)
 import System.Process.Typed
   ( createPipe,
+    getExitCode,
     getStdin,
     proc,
     setStdin,
@@ -57,16 +55,6 @@ import System.ZMQ4.Monadic hiding (SocketType)
 import Text.Regex.TDFA (defaultCompOpt, defaultExecOpt)
 import Text.Regex.TDFA.String (compile, regexec)
 import Prelude hiding (state, stdin)
-
-baton :: MVar ()
-baton = unsafePerformIO $ newMVar ()
-{-# NOINLINE baton #-}
-
-print' :: (MonadBaseControl IO m, MonadIO m, Show a) => a -> m ()
-print' a = withMVar baton $ \() -> print a
-
-putStrLn' :: (MonadBaseControl IO m, MonadIO m) => String -> m ()
-putStrLn' a = withMVar baton $ \() -> putStrLn a
 
 kernelDirectories :: [FilePath]
 kernelDirectories = ["/usr/share/jupyter/kernels"]
@@ -82,8 +70,8 @@ findKernelSpecs = do
   where
     isKernelDir p = doesDirectoryExist p &&^ doesFileExist (p </> "kernel.json")
 
-getAllSpecs :: IO (Map Text KernelSpec)
-getAllSpecs = do
+getAllSpecs :: (MonadIO m) => m (Map Text KernelSpec)
+getAllSpecs = liftIO $ do
   ks <- M.toList <$> findKernelSpecs
   ss <- forM ks $ \(k, d) -> do
     es <- eitherDecodeFileStrict' (d </> "kernel.json")
@@ -91,9 +79,6 @@ getAllSpecs = do
       Left err -> error $ toText err
       Right s -> pure (k, s)
   pure $ M.fromList ss
-
-startKernel :: KernelSpec -> IO ()
-startKernel _ks = pass
 
 makeUrl :: PortNumber -> String
 makeUrl port = "tcp://127.0.0.1:" <> show port
@@ -134,14 +119,15 @@ withWorker :: (MonadBaseControl IO m) => m Void -> m a -> m a
 withWorker worker cont = either absurd id <$> race worker cont
 
 withKernel ::
+  (MonadIO m) =>
   KernelConfig ->
   KernelSpec ->
-  (forall z. Kernel z -> ZMQ z a) ->
-  IO a
-withKernel conf spec z =
-  withSystemTempDirectory "ledger-kernel" $ \tmp -> do
+  KernelControl ->
+  (forall z. Kernel z -> ZMQ z ()) ->
+  m ()
+withKernel conf spec kCtrl z =
+  liftIO . withSystemTempDirectory "ledger-kernel" $ \tmp -> do
     putStrLn' tmp
-    -- print' ss
     let cf = tmp </> "kernel.json"
         ns = M.fromList [("connection_file", cf)]
     writeFileLBS cf $ encodePretty conf
@@ -154,51 +140,71 @@ withKernel conf spec z =
             _ -> s
         lingerTime = restrict (1000 :: Int)
     print' (cmd :| args)
-    runZMQ
-      $ bracket
-        -- (startProcess $ proc cmd (args <> one "--debug") & setStdin createPipe)
-        (startProcess $ proc cmd args & setStdin createPipe)
-        stopProcess
-      $ \p -> do
-        liftIO $ hClose (getStdin p)
-        shell_ <- socket Dealer
-        iopub_ <- socket Sub
-        stdin_ <- socket Dealer
-        control_ <- socket Dealer
-        hb_ <- socket Req
-        setLinger lingerTime shell_
-        setLinger lingerTime iopub_
-        setLinger lingerTime stdin_
-        setLinger lingerTime control_
-        setLinger lingerTime hb_
-        connect shell_ $ makeUrl (_shellPort conf)
-        connect iopub_ $ makeUrl (_iopubPort conf)
-        connect stdin_ $ makeUrl (_stdinPort conf)
-        connect control_ $ makeUrl (_controlPort conf)
-        connect hb_ $ makeUrl (_hbPort conf)
-        subscribe iopub_ ""
-        threadDelay 1000000
-        --
-        _kernelUsername <- Username <$> liftIO getEffectiveUserName
-        _kernelSession <- liftIO $ nextJust nextUUID
-        _kernelState <- newMVar Idle
-        _kernelOutput <- newMVar mempty
-        let kernel =
-              Kernel
-                { _kernelIp = _ip conf,
-                  _kernelShell = shell_,
-                  _kernelIopub = iopub_,
-                  _kernelStdin = stdin_,
-                  _kernelControl = control_,
-                  _kernelHb = hb_,
-                  ..
-                }
-        void $ heartbeat kernel
-        -- void $ communicate kernel KernelInfo {_restart = False}
-        res <- z kernel
-        void $ communicate kernel ShutdownContent {_restart = False}
-        print' =<< waitExitCode p
-        pure res
+    bracket
+      -- (startProcess $ proc cmd (args <> one "--debug") & setStdin createPipe)
+      (startProcess $ proc cmd args & setStdin createPipe)
+      ( \p -> do
+          getExitCode p >>= \case
+            Nothing -> do
+              putStrLn' "stopping kernel"
+              stopProcess p
+            _ -> pass
+          putMVar (_done kCtrl) ()
+      )
+      $ \p ->
+        raceDestruct $ runZMQ $ do
+          liftIO $ hClose (getStdin p)
+          shell_ <- socket Dealer
+          iopub_ <- socket Sub
+          stdin_ <- socket Dealer
+          control_ <- socket Dealer
+          hb_ <- socket Req
+          setLinger lingerTime shell_
+          setLinger lingerTime iopub_
+          setLinger lingerTime stdin_
+          setLinger lingerTime control_
+          setLinger lingerTime hb_
+          connect shell_ $ makeUrl (_shellPort conf)
+          connect iopub_ $ makeUrl (_iopubPort conf)
+          connect stdin_ $ makeUrl (_stdinPort conf)
+          connect control_ $ makeUrl (_controlPort conf)
+          connect hb_ $ makeUrl (_hbPort conf)
+          subscribe iopub_ ""
+          --
+          _kernelUsername <- Username <$> liftIO getEffectiveUserName
+          _kernelSession <- liftIO $ nextJust nextUUID
+          _kernelState <- newMVar Idle
+          _kernelOutput <- newMVar mempty
+          let kernel =
+                Kernel
+                  { _kernelIp = _ip conf,
+                    _kernelShell = shell_,
+                    _kernelIopub = iopub_,
+                    _kernelStdin = stdin_,
+                    _kernelControl = control_,
+                    _kernelHb = hb_,
+                    ..
+                  }
+          putStrLn' ("#### kernel session: " <> show (kernel ^. session))
+          void $ heartbeat kernel
+          void $ communicate kernel KernelInfoRequest
+          flushIOPub kernel
+          res <- z kernel
+          void $ communicate kernel ShutdownContent {_restart = False}
+          print' =<< waitExitCode p
+          pure res
+  where
+    raceDestruct :: IO () -> IO ()
+    raceDestruct x = either id id <$> race (readMVar $ _destruct kCtrl) x
+    --
+    flushIOPub :: Kernel z -> ZMQ z ()
+    flushIOPub kernel = do
+      ess <- poll 100 [Sock (kernel ^. iopub) [In] Nothing]
+      case ess of
+        [[]] -> pass
+        _ -> do
+          void $ receiveMulti (kernel ^. iopub)
+          flushIOPub kernel
 
 communicate ::
   forall m z.
@@ -218,17 +224,18 @@ communicate kernel c =
         putStrLn' ("<<<< " <> show (res ^. content))
         pure res
 
-execute :: Kernel z -> MsgContent 'Execute 'Request -> ZMQ z (Message 'Execute 'Reply)
+execute :: Kernel z -> MsgContent 'Execute 'Request -> ZMQ z (Chan KernelOutput)
 execute kernel c = do
-  let soc = messageSocket SExecute kernel
   msg <- newRequest kernel c
-  modifyMVar_ (kernel ^. output) $ \m ->
-    M.insert (msg ^. header . msgId) <$> newChan <*> pure m
+  let soc = messageSocket SExecute kernel
+      mId = msg ^. header . msgId
+  exOut <- newChan
+  modifyMVar_ (kernel ^. output) (pure . M.insert mId exOut)
   putStrLn' (">>>> " <> show (msg ^. content))
   sendMulti soc (serialize msg)
-  res <- deserialize <$> receiveMulti soc
+  res <- deserialize @(Message 'Execute 'Reply) <$> receiveMulti soc
   putStrLn' ("<<<< " <> show (res ^. content))
-  pure res
+  pure exOut
 
 heartbeat :: Kernel z -> ZMQ z UTCTime
 heartbeat kernel = do
@@ -240,75 +247,92 @@ heartbeat kernel = do
   putStrLn' ("#### " <> show t)
   pure t
 
-runKernel :: KernelConfig -> KernelSpec -> IO ()
-runKernel conf spec =
-  withKernel conf spec $ \kernel ->
-    withWorker (runIOPub kernel) $ do
-      putStrLn' ("#### kernel session: " <> show (kernel ^. session))
-      msg <-
+runKernel :: (MonadIO m) => KernelSpec -> KernelControl -> m ()
+runKernel spec kCtrl = do
+  conf <- liftIO . mkConf $ S.tupleToHostAddress (127, 0, 0, 1)
+  withKernel conf spec kCtrl $ \kernel ->
+    withWorker (runIOPub kernel) $
+      runShell kernel =<< readChan (_in kCtrl)
+  where
+    runShell :: Kernel z -> KernelInput -> ZMQ z ()
+    runShell _ KernelShutdown =
+      putStrLn' "#### shutting down kernel"
+    runShell kernel (KernelExecute expr) = do
+      eOut <-
         execute
           kernel
           ExecuteRequest
-            { _code = unlines ["print('sup')", "8"],
+            { _code = expr,
               _silent = False,
               _storeHistory = True,
               _userExpressions = mempty,
               _allowStdin = False,
               _stopOnError = True
             }
-      out <- readMVar (kernel ^. output)
-      whenJust (out ^. at (msg ^. parentHeader . msgId)) $ \c ->
-        let go = do
-              x <- readChan c
-              putStrLn' ("<<<< " <> show x)
-              unless (x == KernelDone) go
-         in go
-  where
+      let go = do
+            x <- readChan eOut
+            putStrLn' ("|||| " <> show x)
+            writeChan (_out kCtrl) x
+            case x of
+              KernelDone -> putStrLn' "#### execute done"
+              _ -> go
+      void $ fork go
+      runShell kernel =<< readChan (_in kCtrl)
+    --
     runIOPub :: Kernel z -> ZMQ z Void
     runIOPub kernel =
-      forever . void $
-        poll 10 [Sock (kernel ^. iopub) [In] (Just $ receiveIOPub kernel)]
-    receiveIOPub :: Kernel z -> [Event] -> ZMQ z ()
-    receiveIOPub kernel _ = do
-      io <- receiveMulti (kernel ^. iopub)
-      handle (iopubBug io) $ case deserialize @(Some IOPubMessage) io of
-        Some msg -> case msg ^. header . msgType of
-          SStatus -> do
-            let s = msg ^. content . executionState
-            void $ swapMVar (kernel ^. state) s
-            when (s == Idle)
-              $ withMVar (kernel ^. output)
-              $ \m ->
-                whenJust (flip M.lookup m =<< msg ^. parentHeader . msgId) $ \c ->
-                  writeChan c KernelDone
-          SExecuteInput -> pass
-          SExecuteResult ->
-            withMVar (kernel ^. output) $ \m ->
-              whenJust (M.lookup (msg ^. parentHeader . msgId) m) $ \c ->
-                for_ (M.toList $ msg ^. content . data_) $ \case
-                  ("text/plain", d) -> writeChan c (KernelResult d)
-                  (t, _) -> putStrLn' ("|||| unknown mime type: " <> toString t)
-          SStream ->
-            withMVar (kernel ^. output) $ \m ->
-              whenJust (m ^. at (msg ^. parentHeader . msgId)) $ \c ->
-                if msg ^. content . name == "stdout"
-                  then writeChan c (KernelStdout (msg ^. content . text))
-                  else putStrLn' ("|||| unknown stream: " <> show msg)
+      forever . void $ do
+        -- putStrLn' "~~~~"
+        io <- receiveMulti (kernel ^. iopub)
+        -- print' io
+        handle (iopubBug io) $ case deserialize @(Some IOPubMessage) io of
+          Some msg -> case msg ^. header . msgType of
+            SStatus -> do
+              let s = msg ^. content . executionState
+              putStrLn' ("~~~~ " <> show s)
+              void $ swapMVar (kernel ^. state) s
+              when (s == Idle)
+                $ withMVar (kernel ^. output)
+                $ \m ->
+                  whenJust (flip M.lookup m $ msg ^. parentHeader . msgId) $ \c ->
+                    writeChan c KernelDone
+            SExecuteInput -> pass
+            SExecuteResult ->
+              withMVar (kernel ^. output) $ \m ->
+                whenJust (M.lookup (msg ^. parentHeader . msgId) m) $ \c ->
+                  for_ (M.toList $ msg ^. content . data_) $ \case
+                    ("text/plain", d) -> writeChan c (KernelResult d)
+                    (t, _) -> putStrLn' ("|||| unknown mime type: " <> toString t)
+            SStream ->
+              withMVar (kernel ^. output) $ \m ->
+                whenJust (m ^. at (msg ^. parentHeader . msgId)) $ \c ->
+                  if msg ^. content . name == "stdout"
+                    then writeChan c (KernelStdout (msg ^. content . text))
+                    else putStrLn' ("|||| unknown stream: " <> show msg)
+            SError ->
+              withMVar (kernel ^. output) $ \m ->
+                whenJust (m ^. at (msg ^. parentHeader . msgId)) $ \c ->
+                  writeChan
+                    c
+                    ( KernelError
+                        (msg ^. content . traceback)
+                        (msg ^. content . ename)
+                        (msg ^. content . evalue)
+                    )
+    --
     iopubBug io e =
       putStrLn' . toString $
         unlines
-          [ "iopub error: " <> show (e :: DeserializeBug),
+          [ "|||| iopub error: " <> show (e :: DeserializeBug),
             "on " <> show io
           ]
 
-test :: IO ()
-test = do
-  conf <- mkConf $ S.tupleToHostAddress (127, 0, 0, 1)
-  let kernelName = "python3"
+runKernelName :: (MonadIO m) => Text -> KernelControl -> m ()
+runKernelName kernelName kCtrl = do
   ss <- getAllSpecs
   spec <-
     maybe (die $ "no kernel: " <> toString kernelName) pure $
       ss !? kernelName
-  print' spec
-  putStrLn' . decodeUtf8 $ encodePretty conf
-  runKernel conf spec
+  runKernel spec kCtrl
+-- test :: IO ()
+-- test = runKernelName "python3"

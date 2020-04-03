@@ -48,12 +48,6 @@ instance ToJSON KernelConfig where
 
   toEncoding = genericToEncoding customOptions
 
-data KernelOutput
-  = KernelStdout Text
-  | KernelResult Text
-  | KernelDone
-  deriving (Show, Eq)
-
 data Kernel z
   = Kernel
       { _kernelIp :: Text,

@@ -19,7 +19,6 @@ extra-source-files:  CHANGELOG.md
 executable backend
   main-is:             Main.hs
   other-modules:       Prelude
-                     , Data.RepMap
                      , Ledger.Orphans
                      , Jupyter
                      , Jupyter.Types

@@ -6,11 +6,10 @@
 
 module Jupyter.Types.Common where
 
+import Control.Concurrent.Chan.Lifted (Chan)
 import Data.Aeson
   ( FromJSON (..),
-    Options (..),
     ToJSON (..),
-    defaultOptions,
     genericParseJSON,
     genericToEncoding,
     genericToJSON,
@@ -26,15 +25,6 @@ import Data.Singletons
 import Data.Singletons.Prelude.Show
 import Data.Singletons.TH (singletons)
 import Text.Casing (fromHumps, toQuietSnake)
-
-customOptions :: Options
-customOptions =
-  defaultOptions
-    { fieldLabelModifier =
-        toQuietSnake . fromHumps . takeWhile (/= '_') . drop 1,
-      constructorTagModifier = toQuietSnake . fromHumps,
-      omitNothingFields = True
-    }
 
 newtype Username = Username String
   deriving (Generic, Show)
@@ -53,10 +43,10 @@ $( singletons
        data ReqRep = Request | Reply
          deriving (Show)
 
-       data MessageType = Shutdown | Execute | Heartbeat
+       data MessageType = Shutdown | Execute | Heartbeat | KernelInfo
          deriving (Show)
 
-       data IOPubType = Stream | Status | ExecuteInput | ExecuteResult
+       data IOPubType = Stream | Status | ExecuteInput | ExecuteResult | Error
          deriving (Generic, Show)
 
        data KernelSocket = Shell | IOPub | Stdin | Control | Hb
@@ -87,6 +77,7 @@ instance FromJSON ExecutionState where
 type family MessageSocket m where
   MessageSocket 'Shutdown = 'Control
   MessageSocket 'Execute = 'Shell
+  MessageSocket 'KernelInfo = 'Shell
   MessageSocket 'Heartbeat = 'Hb
 
 class Deserialize a where
@@ -99,3 +90,11 @@ newtype DeserializeBug = DeserializeBug String
   deriving (Show)
 
 instance Exception DeserializeBug
+
+data KernelControl
+  = KernelControl
+      { _in :: Chan KernelInput,
+        _out :: Chan KernelOutput,
+        _done :: MVar (),
+        _destruct :: MVar ()
+      }

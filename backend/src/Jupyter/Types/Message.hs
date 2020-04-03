@@ -63,8 +63,7 @@ import Data.UUID.V1 (nextUUID)
 import Jupyter.Types.Common
 import Jupyter.Types.Content
 import Jupyter.Types.Kernel
-import System.ZMQ4.Monadic (Receiver, Sender)
-import System.ZMQ4.Monadic (Socket)
+import System.ZMQ4.Monadic (Receiver, Sender, Socket)
 import Text.Casing (fromHumps, toQuietSnake)
 import Text.Show (ShowS, showsPrec)
 
@@ -74,8 +73,8 @@ toSnake = toText . toQuietSnake . fromHumps . toString
 data MsgType m r = MsgType (SMessageType m) (SReqRep r)
   deriving (Generic, Show)
 
-instance ToJSON (MsgType m 'Request) where
-  toJSON (MsgType m _) = A.String (toSnake (show $ fromSing m) <> "_request")
+instance ToJSON (MsgType m r) where
+  toJSON (MsgType m r) = A.String (toSnake (show (fromSing m) <> show (fromSing r)))
 
 instance (SingI m, SingI r) => FromJSON (MsgType m r) where
   parseJSON o =
@@ -238,15 +237,30 @@ makeFieldsNoPrefix ''StatusParentHeader
 instance FromJSON StatusParentHeader where
   parseJSON = genericParseJSON customOptions
 
-type family IOPubParentHeader (m :: IOPubType) where
-  IOPubParentHeader 'Status = StatusParentHeader
-  IOPubParentHeader m = Header 'Execute 'Request
+data IOPubParentHeader
+  = IOPubParentHeader
+      { _msgId :: UUID,
+        _username :: Username,
+        _session :: UUID,
+        _date :: UTCTime,
+        _msgType :: Text,
+        _version :: Text
+      }
+  deriving (Generic, Show)
+
+makeFieldsNoPrefix ''IOPubParentHeader
+
+instance ToJSON IOPubParentHeader where
+  toJSON = genericToJSON customOptions
+
+instance FromJSON IOPubParentHeader where
+  parseJSON = genericParseJSON customOptions
 
 data IOPubMessage e
   = IOPubMessage
       { _zmqIdent :: Text,
         _header :: IOPubHeader e,
-        _parentHeader :: IOPubParentHeader e,
+        _parentHeader :: IOPubParentHeader,
         _metadata :: HashMap Text A.Value,
         _content :: IOPubContent e,
         _buffers :: [Text]
@@ -255,9 +269,7 @@ data IOPubMessage e
 
 makeFieldsNoPrefix ''IOPubMessage
 
-deriving instance
-  (Show (IOPubParentHeader e), Show (IOPubContent e)) =>
-  Show (IOPubMessage e)
+deriving instance (Show (IOPubContent e)) => Show (IOPubMessage e)
 
 showsPrec' :: Int -> IOPubMessage e -> ShowS
 showsPrec' i m =
@@ -268,7 +280,7 @@ instance GShow IOPubMessage where
   gshowsPrec = showsPrec'
 
 instance
-  (SingI m, FromJSON (IOPubParentHeader m), FromJSON (IOPubContent m)) =>
+  (SingI m, FromJSON (IOPubContent m)) =>
   FromJSON (IOPubMessage m)
   where
   parseJSON = genericParseJSON customOptions
@@ -277,9 +289,7 @@ data IOPubInsts e where
   IOPubInsts ::
     ( c ~ IOPubContent e,
       Show c,
-      FromJSON c,
-      Show (IOPubParentHeader e),
-      FromJSON (IOPubParentHeader e)
+      FromJSON c
     ) =>
     IOPubInsts
       e
@@ -289,6 +299,7 @@ iopubInsts SStream = IOPubInsts
 iopubInsts SStatus = IOPubInsts
 iopubInsts SExecuteInput = IOPubInsts
 iopubInsts SExecuteResult = IOPubInsts
+iopubInsts SError = IOPubInsts
 
 instance Deserialize (Some IOPubMessage) where
   deserialize (ids : "<IDS|MSG>" : _s : h : ph : md : c : bs) =
@@ -340,6 +351,7 @@ msgInsts :: SMessageType e -> MsgInsts e
 msgInsts SShutdown = MsgInsts
 msgInsts SExecute = MsgInsts
 msgInsts SHeartbeat = MsgInsts
+msgInsts SKernelInfo = MsgInsts
 
 newHeader :: (MonadIO m) => Kernel z -> SMessageType e -> m (Header e 'Request)
 newHeader kernel mt = do
