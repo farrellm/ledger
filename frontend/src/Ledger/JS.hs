@@ -4,7 +4,6 @@
 module Ledger.JS where
 
 import Language.Javascript.JSaddle.Types
-import Language.Javascript.JSaddle.Types (JSM, liftJSM)
 import Relude
 
 #ifdef ghcjs_HOST_OS

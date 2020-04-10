@@ -18,14 +18,18 @@ extra-source-files:  CHANGELOG.md
 
 executable frontend
   main-is:             Main.hs
-  other-modules:       Ledger.JS
+  other-modules:       Ledger
+                     , Ledger.JS
+                     , Ledger.Types
   -- other-extensions:
   build-depends:       base >=4.12 && <4.13
                      , common
-                     -- , containers
+                     , containers
+                     , ghcjs-dom
                      , jsaddle
                      , jsaddle-warp
                      , lens
+                     , random
                      , reflex-dom
                      , relude
                      , text
