@@ -1,17 +1,20 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
 module Common where
 
+import Control.Lens (makeFieldsNoPrefix)
 import Data.Aeson
   ( FromJSON (..),
     Options (..),
     ToJSON (..),
     defaultOptions,
-    genericParseJSON,
-    genericToEncoding,
-    genericToJSON,
   )
+import Data.UUID.Types (UUID)
 import Relude
 import Text.Casing (fromHumps, toQuietSnake)
 
@@ -25,13 +28,48 @@ customOptions =
     }
 
 data KernelInput
-  = KernelExecute Text
+  = KernelExecute UUID Text
   | KernelShutdown
-  deriving (Show, Eq, Ord)
+  deriving (Generic, Show, Eq, Ord)
 
 data KernelOutput
-  = KernelStdout Text
-  | KernelResult Text
-  | KernelError [Text] Text Text
+  = KernelStdout Text Text
+  | KernelResult Text Text
+  | KernelError Text [Text] Text Text
   | KernelDone
-  deriving (Show, Eq, Ord)
+  | KernelMissing UUID
+  deriving (Generic, Show, Eq, Ord)
+
+instance ToJSON KernelInput
+
+instance FromJSON KernelInput
+
+instance ToJSON KernelOutput
+
+instance FromJSON KernelOutput
+
+data ExecuteRequest
+  = ExecuteRequest
+      { _kernelUUID :: UUID,
+        _cellUUID :: UUID,
+        _cellCode :: Text
+      }
+  deriving (Generic, Show)
+
+instance ToJSON ExecuteRequest
+
+instance FromJSON ExecuteRequest
+
+makeFieldsNoPrefix ''ExecuteRequest
+
+newtype ResultRequest
+  = ResultRequest
+      { _kernelUUID :: UUID
+      }
+  deriving (Generic, Show)
+
+instance ToJSON ResultRequest
+
+instance FromJSON ResultRequest
+
+makeFieldsNoPrefix ''ResultRequest
