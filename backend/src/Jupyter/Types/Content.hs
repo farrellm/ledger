@@ -16,6 +16,7 @@ import Data.Aeson
 import Data.Aeson.Types ((.:), withObject)
 import qualified Data.Aeson.Types as A
 import Jupyter.Types.Common
+import Prelude hiding (ExecuteRequest)
 
 data ExecuteRequest
   = ExecuteRequest

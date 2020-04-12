@@ -7,10 +7,12 @@ module Prelude
     nextJust,
     print',
     putStrLn',
+    withWorker,
   )
 where
 
 import Common
+import Control.Concurrent.Async.Lifted (race)
 import Control.Concurrent.MVar.Lifted (withMVar)
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Relude
@@ -32,3 +34,6 @@ print' a = withMVar baton $ \() -> print a
 
 putStrLn' :: (MonadBaseControl IO m, MonadIO m) => String -> m ()
 putStrLn' a = withMVar baton $ \() -> putStrLn a
+
+withWorker :: (MonadBaseControl IO m) => m Void -> m a -> m a
+withWorker worker cont = either absurd id <$> race worker cont

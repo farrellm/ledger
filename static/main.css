@@ -24,6 +24,25 @@ textarea {
     margin-bottom: 0.5rem;
 }
 
+.card-header-title {
+    padding: 0 4px;
+}
+
+.card-header-icon {
+    padding: 0 4px;
+}
+
 .card-content {
     padding: 0; /* 0.5rem;*/
+}
+
+.stdout {
+    padding: 0;
+    margin: 0 4px;
+}
+
+.result {
+    background-color: white;
+    padding: 0;
+    margin: 0 4px;
 }

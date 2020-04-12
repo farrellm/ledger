@@ -11,14 +11,12 @@ module Jupyter
   )
 where
 
-import Common
 import Control.Concurrent.Async.Lifted (race)
 import Control.Concurrent.Chan.Lifted (Chan, newChan, readChan, writeChan)
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.MVar.Lifted (modifyMVar_, withMVar)
 import Control.Exception.Lifted (bracket, handle)
 import Control.Lens
-import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Aeson (eitherDecodeFileStrict')
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.Map as M
@@ -54,7 +52,7 @@ import System.Process.Typed
 import System.ZMQ4.Monadic hiding (SocketType)
 import Text.Regex.TDFA (defaultCompOpt, defaultExecOpt)
 import Text.Regex.TDFA.String (compile, regexec)
-import Prelude hiding (state, stdin)
+import Prelude hiding (ExecuteRequest, state, stdin)
 
 kernelDirectories :: [FilePath]
 kernelDirectories = ["/usr/share/jupyter/kernels"]
@@ -114,9 +112,6 @@ mkConf ip_ =
                   _key = ""
                   _transport = "tcp"
               pure KernelConfig {..}
-
-withWorker :: (MonadBaseControl IO m) => m Void -> m a -> m a
-withWorker worker cont = either absurd id <$> race worker cont
 
 withKernel ::
   (MonadIO m) =>
@@ -257,7 +252,7 @@ runKernel spec kCtrl = do
     runShell :: Kernel z -> KernelInput -> ZMQ z ()
     runShell _ KernelShutdown =
       putStrLn' "#### shutting down kernel"
-    runShell kernel (KernelExecute expr) = do
+    runShell kernel (KernelExecute cUUID expr) = do
       eOut <-
         execute
           kernel
@@ -272,7 +267,7 @@ runKernel spec kCtrl = do
       let go = do
             x <- readChan eOut
             putStrLn' ("|||| " <> show x)
-            writeChan (_out kCtrl) x
+            writeChan (_out kCtrl) (cUUID, x)
             case x of
               KernelDone -> putStrLn' "#### execute done"
               _ -> go
@@ -301,13 +296,13 @@ runKernel spec kCtrl = do
               withMVar (kernel ^. output) $ \m ->
                 whenJust (M.lookup (msg ^. parentHeader . msgId) m) $ \c ->
                   for_ (M.toList $ msg ^. content . data_) $ \case
-                    ("text/plain", d) -> writeChan c (KernelResult d)
+                    ("text/plain", d) -> writeChan c (KernelResult (msg ^. header . msgId) d)
                     (t, _) -> putStrLn' ("|||| unknown mime type: " <> toString t)
             SStream ->
               withMVar (kernel ^. output) $ \m ->
                 whenJust (m ^. at (msg ^. parentHeader . msgId)) $ \c ->
                   if msg ^. content . name == "stdout"
-                    then writeChan c (KernelStdout (msg ^. content . text))
+                    then writeChan c (KernelStdout (msg ^. header . msgId) (msg ^. content . text))
                     else putStrLn' ("|||| unknown stream: " <> show msg)
             SError ->
               withMVar (kernel ^. output) $ \m ->
@@ -315,6 +310,7 @@ runKernel spec kCtrl = do
                   writeChan
                     c
                     ( KernelError
+                        (msg ^. header . msgId)
                         (msg ^. content . traceback)
                         (msg ^. content . ename)
                         (msg ^. content . evalue)

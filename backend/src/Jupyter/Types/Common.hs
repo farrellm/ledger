@@ -24,6 +24,7 @@ import Data.Singletons
   )
 import Data.Singletons.Prelude.Show
 import Data.Singletons.TH (singletons)
+import Data.UUID (UUID)
 import Text.Casing (fromHumps, toQuietSnake)
 
 newtype Username = Username String
@@ -94,7 +95,7 @@ instance Exception DeserializeBug
 data KernelControl
   = KernelControl
       { _in :: Chan KernelInput,
-        _out :: Chan KernelOutput,
+        _out :: Chan (UUID, KernelOutput),
         _done :: MVar (),
         _destruct :: MVar ()
       }

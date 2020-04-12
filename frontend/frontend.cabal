@@ -22,7 +22,9 @@ executable frontend
                      , Ledger.JS
                      , Ledger.Types
   -- other-extensions:
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
   build-depends:       base >=4.12 && <4.13
+                     , aeson
                      , common
                      , containers
                      , ghcjs-dom

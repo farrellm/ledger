@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -7,6 +8,7 @@ import Control.Concurrent.Chan.Lifted (newChan, readChan, writeChan)
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.MVar.Lifted (modifyMVar_)
 import Control.Exception (AsyncException, handle)
+import Control.Lens
 import qualified Data.Map as M
 import qualified Data.UUID as U
 import Data.UUID (UUID)
@@ -39,7 +41,7 @@ test = do
     k <- KernelControl <$> newChan <*> newChan <*> newEmptyMVar <*> newEmptyMVar
     modifyMVar_ kernels (pure . M.insert u k)
     void $ fork (runKernelName "python3" k)
-    writeChan (_in k) (KernelExecute $ unlines ["print('yolo')", "2 + 2"])
+    writeChan (_in k) (KernelExecute u $ unlines ["print('yolo')", "2 + 2"])
     -- writeChan (_in k) (KernelExecute $ unlines ["print 'yolo'", "2 + 2"])
     print' =<< readChan (_out k)
     print' =<< readChan (_out k)
@@ -59,11 +61,36 @@ main = do
             . staticPolicy (addBase "static")
             . staticPolicy (addBase "frontend")
         )
+      --
       get "/" $ file "./frontend/index.html"
+      --
       get "/uuid" $ text . fromStrict . U.toText =<< nextJust (liftIO nextUUID)
+      --
       get "/new_kernel" $ do
         u <- nextJust (liftIO nextUUID)
         k <- KernelControl <$> newChan <*> newChan <*> newEmptyMVar <*> newEmptyMVar
         modifyMVar_ kernels (pure . M.insert u k)
         void . fork $ runKernelName "python3" k
-        text . fromStrict $ U.toText u
+        json u
+      --
+      post "/execute" $ do
+        putStrLn' "execute:"
+        d <- jsonData
+        print' (d :: ExecuteRequest)
+        M.lookup (d ^. kernelUUID) <$> readMVar kernels >>= \case
+          Nothing -> pass
+          Just k -> writeChan (_in k) $ KernelExecute (d ^. cellUUID) (d ^. cellCode)
+        json (d ^. cellUUID)
+      --
+      post "/result" $ do
+        putStrLn' "result:"
+        d <- jsonData
+        print' (d :: ResultRequest)
+        M.lookup (d ^. kernelUUID) <$> readMVar kernels >>= \case
+          Nothing -> do
+            putStrLn' "kernel missing"
+            json (U.nil, KernelMissing $ d ^. kernelUUID)
+          Just k -> do
+            r <- readChan (_out k)
+            print' r
+            json r
