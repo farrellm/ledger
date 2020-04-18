@@ -12,12 +12,21 @@ textarea {
     padding-right: 0.5rem;
 }
 
+.navbar-item > .button.is-loading {
+    pointer-events: auto;
+}
+
 .section {
     padding: 1.5rem;
 }
 
-.card-header-title > button {
-    margin-right: 0.5rem;
+.card-header-title > .button {
+    margin-right: 0.25rem;
+}
+
+.card-header-title > input {
+    width: 8rem;
+    margin-right: 0.2rem;
 }
 
 .card:not(:last-child) {

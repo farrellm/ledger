@@ -7,6 +7,7 @@ import Language.Javascript.JSaddle.Types
 import Relude
 
 #ifdef ghcjs_HOST_OS
+import Language.Javascript.JSaddle
 #else
 import Network.Wai.Handler.Warp
   ( defaultSettings,
@@ -30,3 +31,14 @@ runLedger port f =
   where
     ledgerApp = staticPolicy (addBase "static") jsaddleApp
 #endif
+
+#ifdef ghcjs_HOST_OS
+putStrLn' :: (MonadIO m) => String -> m ()
+putStrLn' x = void . liftIO $ eval ("console.log('" <> x <> "')")
+#else
+putStrLn' :: (MonadIO m) => String -> m ()
+putStrLn' = putStrLn
+#endif
+
+print' :: (Show a, MonadIO m) => a -> m ()
+print'  = putStrLn' . show
