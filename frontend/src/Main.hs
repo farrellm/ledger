@@ -13,10 +13,15 @@ import Common
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Chan (Chan)
 import qualified Control.Concurrent.Chan as Chan
-import Control.Lens hiding ((#))
+import Control.Lens hiding ((#), unsnoc)
 import Control.Monad.Fix (MonadFix)
 import Data.Aeson (ToJSON, encode)
+import qualified Data.Attoparsec.Combinator as A
+import qualified Data.Attoparsec.Text as A
+import Data.Char (isAlpha, isAlphaNum, isSpace)
 import qualified Data.Map as M
+import qualified Data.Set as S
+import qualified Data.Text as T
 import Data.Traversable (for)
 import Data.UUID.Types (UUID)
 import qualified Data.UUID.Types as U
@@ -26,8 +31,12 @@ import Language.Javascript.JSaddle.Types (JSM, liftJSM)
 import Ledger.JS
 import Ledger.Types
 import Reflex.Dom.Core
-import Relude hiding (catMaybes, mapMaybe, stdout)
-import System.Random
+import Relude hiding (catMaybes, error, mapMaybe, stdout)
+import qualified Relude as R
+import Relude.Extra.Map
+import System.Random (randomIO)
+import Text.Regex.TDFA ((=~))
+import Text.Regex.TDFA.Text ()
 
 filterDuplicates ::
   (Reflex t, Eq a, MonadHold t m, MonadFix m) =>
@@ -135,17 +144,22 @@ htmlBody ::
   m ()
 htmlBody = do
   ls <-
-    LedgerState <$> newIORef Nothing
-      <*> newMVar []
-      <*> newIORef mempty
-      <*> newIORef mempty
-      <*> newIORef mempty
-      <*> newIORef mempty
-      <*> newChan
-      <*> newMVar False
-  -- manage new kernel requests
+    LedgerState <$> newIORef Nothing -- _kernelUUID
+      <*> newMVar [] --                 _uuids
+      <*> newIORef mempty --            _label
+      <*> newIORef mempty --            _parameters
+      <*> newIORef mempty --            _code
+      <*> newIORef mempty --            _result
+      <*> newIORef mempty --            _stdout
+      <*> newIORef mempty --            _error
+      <*> newIORef mempty --            _dirty
+      <*> newChan --                    _queue
+      <*> newMVar False --              _stop
+      <*> newEmptyMVar --               _ready
+      -- manage new kernel requests
   (evNewKernel', triggerNewKernel) <- newTriggerEvent
-  evNewKernel <- NewKernel <<$>> getAndDecode (evNewKernel' $> "http://localhost:8000/new_kernel")
+  evNewKernel'' <- getAndDecode (evNewKernel' $> "http://localhost:8000/new_kernel")
+  evNewKernel <- NewKernel <<$>> filterDuplicates evNewKernel''
   liftIO $ triggerNewKernel ()
   (evDeadKernel', triggerDeadKernel) <- newTriggerEvent
   let evDeadKernel = evDeadKernel' $> DeadKernel
@@ -153,6 +167,9 @@ htmlBody = do
   evExRes <- do
     (evExecute, triggerExecute) <- newTriggerEvent
     fork . forever $ do
+      putStrLn' "#### waiting for ready"
+      takeMVar (ls ^. ready)
+      putStrLn' "#### ready!"
       q <- readChan (ls ^. queue)
       case q of
         Nothing -> void $ swapMVar (ls ^. stop) False
@@ -231,9 +248,14 @@ htmlBody = do
       --
       evResults <-
         performEvent $
-          (refreshState ls >=> resultsUpdate ls triggerNewKernel >=> snapshotResults ls)
+          ( refreshState ls
+              >=> resultsUpdate ls triggerNewKernel
+              >=> snapshotResults ls
+          )
             <$> leftmost [takeLeft evCells, evExRes, evOutput, evCode]
-      dynResults <- holdUniqDyn =<< holdDyn (ResultsSnapshot mempty mempty mempty) evResults
+      dynResults <-
+        holdUniqDyn
+          =<< holdDyn (ResultsSnapshot mempty mempty mempty mempty mempty mempty mempty) evResults
   el "script" . text $
     unlines
       [ "cms = new Map()",
@@ -250,6 +272,7 @@ htmlBody = do
             c <- fromJSVal =<< cm ^. js0 ("getValue" :: Text)
             pure $ fromMaybe "" c
         writeIORef (ls ^. code) $ M.fromList (zip xs cs)
+        for_ xs $ updateParameters ls
       pure u
     --
     kernelUpdate ::
@@ -261,8 +284,11 @@ htmlBody = do
     kernelUpdate ls triggerNewKernel triggerNewRequest u =
       case u of
         NewKernel k -> do
+          putStrLn "new kernel"
           writeIORef (ls ^. kernelUUID) k
+          putMVar (ls ^. ready) ()
           liftIO $ triggerNewRequest ()
+          writeChan (ls ^. queue) $ Just (U.nil, "__ledger = dict()")
         ShutdownKernel -> pass
         DeadKernel -> do
           putStrLn' "kernel died"
@@ -274,28 +300,42 @@ htmlBody = do
     resultsUpdate :: LedgerState -> (() -> IO ()) -> ResultsUpdate -> Performable m ()
     resultsUpdate ls triggerNewKernel u =
       case u of
-        ExecuteCell x ->
-          withMVar (ls ^. stop) $ \s ->
-            unless s $
-              M.lookup x <$> readIORef (ls ^. code) >>= \case
-                Just c -> do
-                  putStrLn' ("Execute: " <> show (x, c))
-                  writeChan (ls ^. queue) $ Just (x, c)
-                  modifyIORef (ls ^. result) $ M.delete x
-                  modifyIORef (ls ^. stdout) $ M.delete x
-                Nothing -> pass
+        ExecuteCell c -> executeCell ls c
         Output c (KernelResult _ r) ->
           modifyIORef (ls ^. result) (M.insert c r)
         Output c (KernelStdout _ r) ->
           modifyIORef (ls ^. stdout) (M.alter (Just . (<> r) . fromMaybe "") c)
+        Output c k@(KernelError _ rs _ _) -> do
+          let rs' = filterEsc <$> rs
+          print' k
+          modifyIORef (ls ^. error) (M.alter (Just . (<> unlines rs') . fromMaybe "") c)
         Output _ (KernelMissing _) -> do
           putStrLn' "KernelMissing"
           writeIORef (ls ^. kernelUUID) Nothing
           liftIO $ triggerNewKernel ()
-        UpdateLabel c l ->
-          modifyIORef (ls ^. label) (M.insert c l)
+        Output _ (KernelDone _) -> do
+          putStrLn' "KernelDone"
+          putMVar (ls ^. ready) ()
+        UpdateLabel c l -> do
+          markDepsDirty ls c
+          lbl <- readIORef (ls ^. label)
+          let bs =
+                S.difference
+                  (S.fromList . takeRight $ M.elems lbl)
+                  (S.fromList . takeRight $ toList (lbl !? c))
+          case l of
+            "" -> modifyIORef (ls ^. label) (M.delete c)
+            _
+              | S.member l bs ->
+                modifyIORef (ls ^. label) (M.insert c $ Left l)
+              | otherwise ->
+                modifyIORef (ls ^. label) (M.insert c $ Right l)
+          updateParameters ls c
+        UpdateCode c -> markDirty ls c
         r -> print' r
-    --
+      where
+        filterEsc :: Text -> Text
+        filterEsc = removeAll "\ESC\\[[0-9;]*m"
     ledgerUpdate :: LedgerState -> LedgerUpdate -> Performable m ()
     ledgerUpdate ls u =
       case u of
@@ -314,19 +354,6 @@ htmlBody = do
         insertPenultimate z [] = [z]
         insertPenultimate z [w] = [z, w]
         insertPenultimate z (w : ws) = w : insertPenultimate z ws
-    --
-    snapshotCells :: LedgerState -> () -> Performable m [CodeSnapshot]
-    snapshotCells ls () = do
-      l <- readIORef (ls ^. label)
-      c <- readIORef (ls ^. code)
-      fmap (\u -> CodeSnapshot u (M.lookup u l) (M.lookup u c)) <$> readMVar (ls ^. uuids)
-    --
-    snapshotResults :: LedgerState -> () -> Performable m ResultsSnapshot
-    snapshotResults ls () =
-      ResultsSnapshot
-        <$> readIORef (ls ^. code)
-        <*> readIORef (ls ^. result)
-        <*> readIORef (ls ^. stdout)
 
 navbar :: forall t m. (MonadWidget t m) => Dynamic t (Maybe UUID) -> m (Event t KernelUpdate)
 navbar dynKernel =
@@ -369,16 +396,32 @@ cell dynSnapshot c =
             . elAttr "span" ("class" =: "icon is-small")
             $ elAttr "i" ("class" =: "fas fa-play") blank
         elLabel <-
-          inputElement
-            (def :: InputElementConfig EventResult t GhcjsDomSpace)
-              { _inputElementConfig_initialValue = fromMaybe "" (c ^. label),
-                _inputElementConfig_elementConfig =
-                  def
-                    { _elementConfig_initialAttributes =
-                        "type" =: "text" <> "class" =: "input"
-                    }
-              }
-        text "= λ()"
+          let attr True = "type" =: "text" <> "class" =: "input"
+              attr False = "type" =: "text" <> "class" =: "input is-danger"
+              attr' = (Just <$>) . attr
+           in inputElement
+                (def :: InputElementConfig EventResult t GhcjsDomSpace)
+                  { _inputElementConfig_initialValue =
+                      maybe "" (either id id) (c ^. label),
+                    _inputElementConfig_elementConfig =
+                      (def :: ElementConfig EventResult t GhcjsDomSpace)
+                        { _elementConfig_initialAttributes =
+                            attr . maybe True isRight $ c ^. label,
+                          _elementConfig_modifyAttributes =
+                            Just
+                              ( attr' . maybe True isRight . (^. label)
+                                  <$> updated dynSnapshot
+                              )
+                        }
+                  }
+        dynText
+          ( (\ls -> "= λ(" <> ls <> ")")
+              . T.intercalate ", "
+              . S.toList
+              . fromMaybe mempty
+              . (^. parameters)
+              <$> dynSnapshot
+          )
         let evEx = domEvent @t Click elEx $> ExecuteCell (c ^. uuid)
             evLabel = UpdateLabel (c ^. uuid) <$> _inputElement_input elLabel
         pure (leftmost [evEx, evLabel])
@@ -412,13 +455,17 @@ cell dynSnapshot c =
       elAttr "textarea" ("id" =: show (c ^. uuid)) $
         text (fromMaybe "" (c ^. code))
       dyn_ $
-        dynSnapshot <&> \snapshot -> do
-          case snapshot ^. stdout of
-            Nothing -> blank
-            Just t -> elClass "pre" "stdout" $ text t
-          case snapshot ^. result of
-            Nothing -> blank
-            Just t -> elClass "pre" "result" $ text t
+        dynSnapshot <&> \snapshot ->
+          divClass (if snapshot ^. dirty then "dirty" else "clean") $ do
+            case snapshot ^. stdout of
+              Nothing -> blank
+              Just t -> elClass "pre" "stdout" $ text t
+            case snapshot ^. error of
+              Nothing -> blank
+              Just t -> elClass "pre" "error" $ text t
+            case snapshot ^. result of
+              Nothing -> blank
+              Just t -> elClass "pre" "result" $ text t
     el "script" $ text (mkScript $ c ^. uuid)
     pure (leftmost [Left <$> evRes, Right <$> evLeg])
   where
@@ -432,9 +479,145 @@ cell dynSnapshot c =
           "cm.on('changes', function(x) { onCodeChange('" <> show u <> "') })"
         ]
 
+snapshotCells :: (MonadIO m) => LedgerState -> () -> m [CodeSnapshot]
+snapshotCells ls () = do
+  l <- readIORef (ls ^. label)
+  c <- readIORef (ls ^. code)
+  fmap (\u -> CodeSnapshot u (l !? u) (c !? u)) <$> readMVar (ls ^. uuids)
+
+snapshotResults :: (MonadIO m) => LedgerState -> () -> m ResultsSnapshot
+snapshotResults ls () =
+  ResultsSnapshot
+    <$> readIORef (ls ^. label)
+    <*> readIORef (ls ^. parameters)
+    <*> readIORef (ls ^. code)
+    <*> readIORef (ls ^. result)
+    <*> readIORef (ls ^. stdout)
+    <*> readIORef (ls ^. error)
+    <*> readIORef (ls ^. dirty)
+
 extractCell :: CodeSnapshot -> ResultsSnapshot -> CellSnapshot
 extractCell c r =
-  CellSnapshot (r ^. result . at (c ^. uuid)) (r ^. stdout . at (c ^. uuid))
+  let u = c ^. uuid
+   in CellSnapshot
+        (r ^. label . at u)
+        (r ^. parameters . at u)
+        (r ^. result . at u)
+        (r ^. stdout . at u)
+        (r ^. error . at u)
+        (S.member u $ r ^. dirty)
+
+executeCell :: (MonadIO m) => LedgerState -> UUID -> m ()
+executeCell ls x =
+  withMVar (ls ^. stop) $ \s ->
+    unless s $
+      (!? x) <$> readIORef (ls ^. code) >>= \case
+        Just c ->
+          (!? x) <$> readIORef (ls ^. parameters) >>= \case
+            Just ps -> do
+              lbl <- readIORef (ls ^. label)
+              let lbl' = M.fromList $ swap <$> takeRight (flop <$> M.toList lbl)
+                  n = T.replace "-" "_" (show x)
+                  n' = "_" <> n
+                  cs' = addReturn $ lines c
+                  c' =
+                    unlines
+                      ( "def " <> n' <> "(" <> T.intercalate ", " (S.toList ps) <> "):"
+                          : (("  " <>) <$> cs')
+                      )
+                  args =
+                    T.intercalate ", " $
+                      fmap (\p -> p <> "=__ledger['" <> U.toText (lbl' M.! p) <> "']") (S.toList ps)
+                  e = case lbl !? x of
+                    Just _ -> T.concat ["__ledger['", show x, "'] = ", n', "(", args, ")"]
+                    Nothing -> T.concat [n', "(", args, ")"]
+              putStrLn' ("Execute: " <> show x)
+              putStrLn' (toString c')
+              putStrLn' (toString e)
+              modifyIORef (ls ^. result) $ M.delete x
+              modifyIORef (ls ^. stdout) $ M.delete x
+              modifyIORef (ls ^. error) $ M.delete x
+              modifyIORef (ls ^. dirty) $ S.delete x
+              writeChan (ls ^. queue) $ Just (x, unlines [c', e])
+            Nothing -> R.error "impossible"
+        Nothing -> R.error "impossible"
+  where
+    flop :: (a, Either b c) -> Either (a, b) (a, c)
+    flop (a, Left b) = Left (a, b)
+    flop (a, Right c) = Right (a, c)
+
+addReturn :: [Text] -> [Text]
+addReturn cs =
+  let rs = dropWhile isSpaces $ reverse cs
+   in case nonEmpty rs of
+        Just (l :| ls) ->
+          let l' =
+                if isSpace (T.head l) || T.isPrefixOf "return" l
+                  then l
+                  else "return " <> l
+           in reverse (l' : ls)
+        Nothing -> []
+  where
+    isSpaces :: Text -> Bool
+    isSpaces = all isSpace . toString
 
 consoleLog :: (Show a) => a -> JSM JSVal
 consoleLog x = eval ("console.log('" <> show x <> "')" :: Text)
+
+tokenize :: Text -> Set Text
+tokenize t =
+  case A.parseOnly tokens t of
+    Left e -> R.error $ toText e
+    Right ts -> S.fromList ts
+  where
+    isTokenChar c = c == '_' || isAlphaNum c
+    initChar = A.satisfy (\c -> c == '_' || isAlpha c)
+    token = A.lookAhead initChar *> A.takeWhile1 isTokenChar
+    tokens = A.skipMany sc *> token `A.sepBy` A.skipMany sc
+    sc = A.satisfy (\c -> not (c == '_' || isAlpha c))
+
+unsnoc :: NonEmpty a -> ([a], a)
+unsnoc (x :| []) = ([], x)
+unsnoc (x :| (y : ys)) = first (x :) $ unsnoc (y :| ys)
+
+removeAll :: Text -> Text -> Text
+removeAll r t = mconcat $ go t
+  where
+    go :: Text -> [Text]
+    go "" = []
+    go u =
+      let (a, _ :: Text, b) = u =~ r
+       in a : go b
+
+updateParameters :: (MonadIO m) => LedgerState -> UUID -> m ()
+updateParameters ls x =
+  (!? x) <$> readIORef (ls ^. code) >>= \case
+    Just c -> do
+      lbl <- readIORef (ls ^. label)
+      let l = lbl !? x
+          bs =
+            S.difference
+              (S.fromList . takeRight $ M.elems lbl)
+              (S.fromList . takeRight $ toList l)
+          ts = tokenize c
+          ps = S.intersection bs ts
+      modifyIORef (ls ^. parameters) (M.insert x ps)
+    Nothing -> modifyIORef (ls ^. parameters) (M.delete x)
+
+markDirty :: (MonadIO m) => LedgerState -> UUID -> m ()
+markDirty ls u = do
+  d <- S.member u <$> readIORef (ls ^. dirty)
+  unless d $ do
+    modifyIORef (ls ^. dirty) (S.insert u)
+    markDepsDirty ls u
+
+markDepsDirty :: forall m. (MonadIO m) => LedgerState -> UUID -> m ()
+markDepsDirty ls x = do
+  pss <- M.toList <$> readIORef (ls ^. parameters)
+  (!? x) <$> readIORef (ls ^. label) >>= \case
+    Just (Right l) -> do
+      let ys = fst <$> filter (S.member l . snd) pss
+      for_ ys $ \y -> do
+        d <- S.member y <$> readIORef (ls ^. dirty)
+        unless d $ markDirty ls y
+    _ -> pass

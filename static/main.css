@@ -45,12 +45,25 @@ textarea {
     padding: 0; /* 0.5rem;*/
 }
 
-.stdout {
+.dirty {
+    border-color: darkred;
+    border-width: 3px;
+    border-style: solid;
+}
+
+pre.stdout {
     padding: 0;
     margin: 0 4px;
 }
 
-.result {
+pre.error {
+    padding: 0;
+    margin: 0 4px;
+    color: darkred;
+    background-color: #f4e7e7;
+}
+
+pre.result {
     background-color: white;
     padding: 0;
     margin: 0 4px;

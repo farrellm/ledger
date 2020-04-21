@@ -16,12 +16,16 @@ data LedgerState
   = LedgerState
       { _kernelUUID :: IORef (Maybe UUID),
         _uuids :: MVar [UUID],
-        _label :: IORef (Map UUID Text),
+        _label :: IORef (Map UUID (Either Text Text)),
+        _parameters :: IORef (Map UUID (Set Text)),
         _code :: IORef (Map UUID Text),
         _result :: IORef (Map UUID Text),
         _stdout :: IORef (Map UUID Text),
+        _error :: IORef (Map UUID Text),
+        _dirty :: IORef (Set UUID),
         _queue :: Chan (Maybe (UUID, Text)),
-        _stop :: MVar Bool
+        _stop :: MVar Bool,
+        _ready :: MVar ()
       }
 
 makeFieldsNoPrefix ''LedgerState
@@ -34,9 +38,13 @@ data KernelLanguage
 
 data ResultsSnapshot
   = ResultsSnapshot
-      { _code :: Map UUID Text,
+      { _label :: Map UUID (Either Text Text),
+        _parameters :: Map UUID (Set Text),
+        _code :: Map UUID Text,
         _result :: Map UUID Text,
-        _stdout :: Map UUID Text
+        _stdout :: Map UUID Text,
+        _error :: Map UUID Text,
+        _dirty :: Set UUID
       }
   deriving (Show, Eq)
 
@@ -45,7 +53,7 @@ makeFieldsNoPrefix ''ResultsSnapshot
 data CodeSnapshot
   = CodeSnapshot
       { _uuid :: UUID,
-        _label :: Maybe Text,
+        _label :: Maybe (Either Text Text),
         _code :: Maybe Text
       }
   deriving (Show, Eq)
@@ -54,8 +62,12 @@ makeFieldsNoPrefix ''CodeSnapshot
 
 data CellSnapshot
   = CellSnapshot
-      { _result :: Maybe Text,
-        _stdout :: Maybe Text
+      { _label :: Maybe (Either Text Text),
+        _parameters :: Maybe (Set Text),
+        _result :: Maybe Text,
+        _stdout :: Maybe Text,
+        _error :: Maybe Text,
+        _dirty :: Bool
       }
   deriving (Show, Eq)
 

@@ -36,7 +36,7 @@ data KernelOutput
   = KernelStdout Text Text
   | KernelResult Text Text
   | KernelError Text [Text] Text Text
-  | KernelDone
+  | KernelDone Text
   | KernelMissing UUID
   deriving (Generic, Show, Eq, Ord)
 

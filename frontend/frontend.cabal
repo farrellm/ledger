@@ -25,6 +25,7 @@ executable frontend
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
   build-depends:       base >=4.12 && <4.13
                      , aeson
+                     , attoparsec
                      , common
                      , containers
                      , ghcjs-dom
@@ -33,6 +34,8 @@ executable frontend
                      , lens
                      , random
                      , reflex-dom
+                     , regex-tdfa
+                     , regex-tdfa-text
                      , relude
                      , text
                      , uuid-types

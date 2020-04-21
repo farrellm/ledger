@@ -269,7 +269,7 @@ runKernel spec kCtrl = do
             putStrLn' ("|||| " <> show x)
             writeChan (_out kCtrl) (cUUID, x)
             case x of
-              KernelDone -> putStrLn' "#### execute done"
+              KernelDone _ -> putStrLn' "#### execute done"
               _ -> go
       void $ fork go
       runShell kernel =<< readChan (_in kCtrl)
@@ -290,7 +290,7 @@ runKernel spec kCtrl = do
                 $ withMVar (kernel ^. output)
                 $ \m ->
                   whenJust (flip M.lookup m $ msg ^. parentHeader . msgId) $ \c ->
-                    writeChan c KernelDone
+                    writeChan c (KernelDone (msg ^. header . msgId))
             SExecuteInput -> pass
             SExecuteResult ->
               withMVar (kernel ^. output) $ \m ->
