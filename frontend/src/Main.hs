@@ -148,6 +148,11 @@ htmlBody ::
   ) =>
   m ()
 htmlBody = do
+  url' <-
+    liftJSM $
+      valToText =<< jsg ("window" :: Text) ! ("location" :: Text) ! ("href" :: Text)
+  let url = url' =~ ("https?://[^:]+" :: Text) :: Text
+  print' url
   ls <-
     LedgerState <$> newIORef Nothing -- _kernelUUID
       <*> newMVar [] --                 _uuids
@@ -163,7 +168,7 @@ htmlBody = do
       <*> newEmptyMVar --               _ready
       -- manage new kernel requests
   (evNewKernel', triggerNewKernel) <- newTriggerEvent
-  evNewKernel'' <- getAndDecode (evNewKernel' $> "http://localhost:8000/new_kernel")
+  evNewKernel'' <- getAndDecode (evNewKernel' $> (url <> ":8000/new_kernel"))
   evNewKernel <- NewKernel <<$>> filterDuplicates evNewKernel''
   liftIO $ triggerNewKernel ()
   (evDeadKernel', triggerDeadKernel) <- newTriggerEvent
@@ -186,7 +191,7 @@ htmlBody = do
           Nothing -> pure Nothing
     evX <-
       performRequestAsync $
-        catMaybes evExecute' <&> postJson' "http://localhost:8000/execute"
+        catMaybes evExecute' <&> postJson' (url <> ":8000/execute")
     filterDuplicates (evX $> RunningCell)
   -- manage kernel output requests
   (evNewRequest, triggerNewRequest) <- newTriggerEvent
@@ -199,7 +204,7 @@ htmlBody = do
         Just k -> pure . Just $ ResultRequest k
   evOutput' <-
     performRequestAsync $
-      catMaybes evNewRequest' <&> postJson' "http://localhost:8000/result"
+      catMaybes evNewRequest' <&> postJson' (url <> ":8000/result")
   evOutput'' <- filterDuplicates $ fmap decodeXhrResponse evOutput'
   evOutput''' <- performEvent $
     evOutput'' <&> \case
