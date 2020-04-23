@@ -104,10 +104,19 @@ htmlHead = do
     )
     blank
   el "title" $ text "Ledger"
-  elAttr "script" ("defer" =: "" <> "src" =: "fontawesome/js/all.js") blank
   elAttr
     "script"
-    ("src" =: "codemirror/lib/codemirror.js" <> "async" =: "false")
+    ( "type" =: "text/javascript"
+        <> "src" =: "fontawesome/js/all.js"
+        <> "defer" =: ""
+    )
+    blank
+  elAttr
+    "script"
+    ( "type" =: "text/javascript"
+        <> "src" =: "codemirror/lib/codemirror.js"
+        <> "defer" =: ""
+    )
     blank
   elAttr
     "link"
@@ -115,10 +124,6 @@ htmlHead = do
         <> "type" =: "text/css"
         <> "href" =: "codemirror/lib/codemirror.css"
     )
-    blank
-  elAttr
-    "script"
-    ("src" =: "codemirror/mode/python/python.js" <> "async" =: "false" <> "defer" =: "")
     blank
   elAttr
     "link"
@@ -230,6 +235,16 @@ htmlBody = do
         let evAdd = domEvent Click elAdd
             evUUID' = AddCellEnd <$> nextUUID evAdd
         pure (evCells', evUUID')
+      void . dyn $
+        dynKernel <&> \case
+          Nothing -> blank
+          Just _ ->
+            elAttr
+              "script"
+              ( "type" =: "text/javascript"
+                  <> "src" =: "codemirror/mode/python/python.js"
+              )
+              blank
       --
       evKernel <-
         performEvent $
