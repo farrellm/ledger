@@ -554,8 +554,8 @@ executeCell ls x =
                     Just _ -> T.concat ["__ledger['", show x, "'] = ", n', "(", args, ")"]
                     Nothing -> T.concat [n', "(", args, ")"]
               putStrLn' ("Execute: " <> show x)
-              putStrLn' (toString c')
-              putStrLn' (toString e)
+              print' c'
+              print' e
               modifyIORef (ls ^. result) $ M.delete x
               modifyIORef (ls ^. stdout) $ M.delete x
               modifyIORef (ls ^. error) $ M.delete x
