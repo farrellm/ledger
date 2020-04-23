@@ -115,7 +115,7 @@ htmlHead = do
     "script"
     ( "type" =: "text/javascript"
         <> "src" =: "codemirror/lib/codemirror.js"
-        <> "defer" =: ""
+        <> "async" =: "false"
     )
     blank
   elAttr
@@ -243,6 +243,8 @@ htmlBody = do
               "script"
               ( "type" =: "text/javascript"
                   <> "src" =: "codemirror/mode/python/python.js"
+                  <> "defer" =: ""
+                  <> "async" =: "false"
               )
               blank
       --
