@@ -1,5 +1,4 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -7,7 +6,7 @@
 
 module Common where
 
-import Control.Lens (makeFieldsNoPrefix)
+import Control.Lens (makeLenses)
 import Data.Aeson
   ( FromJSON (..),
     Options (..),
@@ -50,9 +49,9 @@ instance FromJSON KernelOutput
 
 data ExecuteRequest
   = ExecuteRequest
-      { _kernelUUID :: UUID,
-        _cellUUID :: UUID,
-        _cellCode :: Text
+      { _executeRequest_kernelUUID :: UUID,
+        _executeRequest_cellUUID :: UUID,
+        _executeRequest_cellCode :: Text
       }
   deriving (Generic, Show)
 
@@ -60,11 +59,11 @@ instance ToJSON ExecuteRequest
 
 instance FromJSON ExecuteRequest
 
-makeFieldsNoPrefix ''ExecuteRequest
+makeLenses ''ExecuteRequest
 
 newtype ResultRequest
   = ResultRequest
-      { _kernelUUID :: UUID
+      { _resultRequest_kernelUUID :: UUID
       }
   deriving (Generic, Show)
 
@@ -72,4 +71,4 @@ instance ToJSON ResultRequest
 
 instance FromJSON ResultRequest
 
-makeFieldsNoPrefix ''ResultRequest
+makeLenses ''ResultRequest

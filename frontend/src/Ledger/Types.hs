@@ -1,4 +1,3 @@
-{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -8,27 +7,27 @@ module Ledger.Types where
 
 import Common
 import Control.Concurrent.Chan (Chan)
-import Control.Lens (makeFieldsNoPrefix)
+import Control.Lens (makeLensesWith, underscoreFields)
 import Data.UUID.Types (UUID)
 import Relude
 
 data LedgerState
   = LedgerState
-      { _kernelUUID :: IORef (Maybe UUID),
-        _uuids :: MVar [UUID],
-        _label :: IORef (Map UUID (Either Text Text)),
-        _parameters :: IORef (Map UUID (Set Text)),
-        _code :: IORef (Map UUID Text),
-        _result :: IORef (Map UUID Text),
-        _stdout :: IORef (Map UUID Text),
-        _error :: IORef (Map UUID Text),
-        _dirty :: IORef (Set UUID),
-        _queue :: Chan (Maybe (UUID, Text)),
-        _stop :: MVar Bool,
-        _ready :: MVar ()
+      { _ledgerState_kernelUUID :: IORef (Maybe UUID),
+        _ledgerState_uuids :: MVar [UUID],
+        _ledgerState_label :: IORef (Map UUID (Either Text Text)),
+        _ledgerState_parameters :: IORef (Map UUID (Set Text)),
+        _ledgerState_code :: IORef (Map UUID Text),
+        _ledgerState_result :: IORef (Map UUID Text),
+        _ledgerState_stdout :: IORef (Map UUID Text),
+        _ledgerState_error :: IORef (Map UUID Text),
+        _ledgerState_dirty :: IORef (Set UUID),
+        _ledgerState_queue :: Chan (Maybe (UUID, Text)),
+        _ledgerState_stop :: MVar Bool,
+        _ledgerState_ready :: MVar ()
       }
 
-makeFieldsNoPrefix ''LedgerState
+makeLensesWith underscoreFields ''LedgerState
 
 data KernelLanguage
   = KernelJulia
@@ -38,40 +37,40 @@ data KernelLanguage
 
 data ResultsSnapshot
   = ResultsSnapshot
-      { _label :: Map UUID (Either Text Text),
-        _parameters :: Map UUID (Set Text),
-        _code :: Map UUID Text,
-        _result :: Map UUID Text,
-        _stdout :: Map UUID Text,
-        _error :: Map UUID Text,
-        _dirty :: Set UUID
+      { _resultsSnapshot_label :: Map UUID (Either Text Text),
+        _resultsSnapshot_parameters :: Map UUID (Set Text),
+        _resultsSnapshot_code :: Map UUID Text,
+        _resultsSnapshot_result :: Map UUID Text,
+        _resultsSnapshot_stdout :: Map UUID Text,
+        _resultsSnapshot_error :: Map UUID Text,
+        _resultsSnapshot_dirty :: Set UUID
       }
   deriving (Show, Eq)
 
-makeFieldsNoPrefix ''ResultsSnapshot
+makeLensesWith underscoreFields ''ResultsSnapshot
 
 data CodeSnapshot
   = CodeSnapshot
-      { _uuid :: UUID,
-        _label :: Maybe (Either Text Text),
-        _code :: Maybe Text
+      { _codeSnapshot_uuid :: UUID,
+        _codeSnapshot_label :: Maybe (Either Text Text),
+        _codeSnapshot_code :: Maybe Text
       }
   deriving (Show, Eq)
 
-makeFieldsNoPrefix ''CodeSnapshot
+makeLensesWith underscoreFields ''CodeSnapshot
 
 data CellSnapshot
   = CellSnapshot
-      { _label :: Maybe (Either Text Text),
-        _parameters :: Maybe (Set Text),
-        _result :: Maybe Text,
-        _stdout :: Maybe Text,
-        _error :: Maybe Text,
-        _dirty :: Bool
+      { _cellSnapshot_label :: Maybe (Either Text Text),
+        _cellSnapshot_parameters :: Maybe (Set Text),
+        _cellSnapshot_result :: Maybe Text,
+        _cellSnapshot_stdout :: Maybe Text,
+        _cellSnapshot_error :: Maybe Text,
+        _cellSnapshot_dirty :: Bool
       }
   deriving (Show, Eq)
 
-makeFieldsNoPrefix ''CellSnapshot
+makeLensesWith underscoreFields ''CellSnapshot
 
 data KernelUpdate
   = NewKernel (Maybe UUID)

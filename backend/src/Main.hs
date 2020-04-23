@@ -77,19 +77,23 @@ main = do
         putStrLn' "execute:"
         d <- jsonData
         print' (d :: ExecuteRequest)
-        M.lookup (d ^. kernelUUID) <$> readMVar kernels >>= \case
+        M.lookup (d ^. executeRequest_kernelUUID) <$> readMVar kernels >>= \case
           Nothing -> pass
-          Just k -> writeChan (_in k) $ KernelExecute (d ^. cellUUID) (d ^. cellCode)
-        json (d ^. cellUUID)
+          Just k ->
+            writeChan (_in k) $
+              KernelExecute
+                (d ^. executeRequest_cellUUID)
+                (d ^. executeRequest_cellCode)
+        json (d ^. executeRequest_cellUUID)
       --
       post "/result" $ do
         putStrLn' "result:"
         d <- jsonData
         print' (d :: ResultRequest)
-        M.lookup (d ^. kernelUUID) <$> readMVar kernels >>= \case
+        M.lookup (d ^. resultRequest_kernelUUID) <$> readMVar kernels >>= \case
           Nothing -> do
             putStrLn' "kernel missing"
-            json (U.nil, KernelMissing $ d ^. kernelUUID)
+            json (U.nil, KernelMissing $ d ^. resultRequest_kernelUUID)
           Just k -> do
             r <- readChan (_out k)
             print' r
