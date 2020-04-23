@@ -440,7 +440,7 @@ cell dynSnapshot c =
           ( (\ls -> "= λ(" <> ls <> ")")
               . T.intercalate ", "
               . S.toList
-              . fromMaybe mempty
+              . maybeToMonoid
               . (^. parameters)
               <$> dynSnapshot
           )
@@ -561,6 +561,7 @@ executeCell ls x =
               modifyIORef (ls ^. error) $ M.delete x
               modifyIORef (ls ^. dirty) $ S.delete x
               writeChan (ls ^. queue) $ Just (x, unlines [c', e])
+              writeChan (ls ^. queue) $ Just (U.nil, "%reset in out")
             Nothing -> R.error "impossible"
         Nothing -> R.error "impossible"
   where
@@ -574,7 +575,10 @@ addReturn cs =
    in case nonEmpty rs of
         Just (l :| ls) ->
           let l' =
-                if isSpace (T.head l) || T.isPrefixOf "return" l
+                if isSpace (T.head l)
+                  || T.isPrefixOf "return" l
+                  || T.isInfixOf ";" l
+                  || T.isPrefixOf "%" l
                   then l
                   else "return " <> l
            in reverse (l' : ls)
