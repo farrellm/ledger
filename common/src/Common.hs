@@ -72,3 +72,17 @@ instance ToJSON ResultRequest
 instance FromJSON ResultRequest
 
 makeLenses ''ResultRequest
+
+data LedgerSave
+  = LedgerSave
+      { _ledgerSave_label :: Map UUID Text,
+        _ledgerSave_badLabel :: Set UUID,
+        _ledgerSave_code :: Map UUID Text
+      }
+  deriving (Generic, Show)
+
+instance ToJSON LedgerSave
+
+instance FromJSON LedgerSave
+
+makeLenses ''LedgerSave

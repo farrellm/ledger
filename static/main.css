@@ -8,10 +8,6 @@ textarea {
   height: auto;
 }
 
-.navbar-item > img {
-    padding-right: 0.5rem;
-}
-
 .navbar-item > .button.is-loading {
     pointer-events: auto;
 }

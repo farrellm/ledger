@@ -16,23 +16,20 @@ maintainer:          farrellm@alum.mit.edu
 build-type:          Simple
 extra-source-files:  CHANGELOG.md
 
-executable frontend
-  main-is:             Main.hs
-  other-modules:       Ledger
+library
+  exposed-modules:     Ledger
                      , Ledger.JS
                      , Ledger.Types
-  -- other-extensions:
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
   build-depends:       base >=4.12 && <4.13
+                     , common
                      , aeson
                      , attoparsec
-                     , common
                      , containers
-                     , ghcjs-dom
                      , jsaddle
                      , jsaddle-warp
                      , lens
                      , random
+                     , relude
                      , reflex-dom
                      , regex-tdfa
                      , regex-tdfa-text
@@ -48,4 +45,14 @@ executable frontend
                      , wai-middleware-static
                      , websockets
   hs-source-dirs:      src
+  default-language:    Haskell2010
+
+executable frontend
+  main-is:             Main.hs
+  -- other-extensions:
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
+  build-depends:       base >=4.12 && <4.13
+                     , frontend
+                     , reflex-dom
+  hs-source-dirs:      app
   default-language:    Haskell2010
