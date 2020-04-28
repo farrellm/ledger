@@ -13,8 +13,9 @@ import Relude
 
 data LedgerState
   = LedgerState
-      { _ledgerState_file :: IORef FilePath,
-        _ledgerState_kernelUUID :: IORef (Maybe UUID),
+      { _ledgerState_url :: Text,
+        _ledgerState_file :: IORef FilePath,
+        _ledgerState_kernelUUID :: MVar UUID,
         _ledgerState_uuids :: MVar [UUID],
         _ledgerState_label :: IORef (Map UUID Text),
         _ledgerState_badLabel :: IORef (Set UUID),
@@ -82,7 +83,7 @@ data CellSnapshot
 makeLensesWith underscoreFields ''CellSnapshot
 
 data KernelUpdate
-  = NewKernel (Maybe UUID)
+  = NewKernel UUID
   | ShutdownKernel
   | DeadKernel
   | StartKernel

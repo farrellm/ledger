@@ -73,8 +73,8 @@ fork :: MonadIO m => IO () -> m ()
 fork = void . liftIO . forkIO
 
 postJson' :: (ToJSON a) => Text -> a -> XhrRequest ByteString
-postJson' url a =
-  XhrRequest "POST" url $
+postJson' u a =
+  XhrRequest "POST" u $
     def
       { _xhrRequestConfig_headers = headerUrlEnc,
         _xhrRequestConfig_sendData = body
@@ -146,14 +146,14 @@ htmlBody ::
   m ()
 htmlBody = do
   evPostBuild <- getPostBuild
-  url' <-
-    liftJSM $
-      valToText =<< jsg ("window" :: Text) ! ("location" :: Text) ! ("href" :: Text)
-  let url = url' =~ ("https?://[^:]+" :: Text) :: Text
-  print' url
   ls <- do
+    url' <-
+      liftJSM $
+        valToText =<< jsg ("window" :: Text) ! ("location" :: Text) ! ("href" :: Text)
+    let _ledgerState_url = url' =~ ("https?://[^:]+" :: Text) :: Text
+    print' _ledgerState_url
     _ledgerState_file <- newIORef "new.ldgr"
-    _ledgerState_kernelUUID <- newIORef Nothing
+    _ledgerState_kernelUUID <- newEmptyMVar
     _ledgerState_uuids <- newMVar []
     _ledgerState_label <- newIORef mempty
     _ledgerState_badLabel <- newIORef mempty
@@ -169,54 +169,14 @@ htmlBody = do
     pure LedgerState {..}
   -- manage new kernel requests
   (evNewKernel', triggerNewKernel) <- newTriggerEvent
-  evNewKernel'' <- getAndDecode (evNewKernel' $> (url <> ":8000/new_kernel"))
-  evNewKernel <- NewKernel <<$>> filterDuplicates evNewKernel''
+  evNewKernel'' <- getAndDecode (evNewKernel' $> ((ls ^. url) <> ":8000/new_kernel"))
+  evNewKernel <- NewKernel <<$>> catMaybes <$> filterDuplicates evNewKernel''
   (evDeadKernel', triggerDeadKernel) <- newTriggerEvent
   let evDeadKernel = evDeadKernel' $> DeadKernel
   -- manage execute requests
-  evExRes <- do
-    (evExecute, triggerExecute) <- newTriggerEvent
-    fork . forever $ do
-      putStrLn' "#### waiting for ready"
-      takeMVar (ls ^. ready)
-      putStrLn' "#### ready!"
-      q <- readChan (ls ^. queue)
-      case q of
-        Nothing -> void $ swapMVar (ls ^. stop) False
-        Just (u, c) -> triggerExecute (u, c)
-    evExecute' <- performEvent $
-      evExecute <&> \(u, c) ->
-        readIORef (ls ^. kernelUUID) >>= \case
-          Just k -> pure $ Just $ ExecuteRequest k u c
-          Nothing -> pure Nothing
-    evX <-
-      performRequestAsync $
-        catMaybes evExecute' <&> postJson' (url <> ":8000/execute")
-    filterDuplicates (evX $> RunningCell)
+  evExRes <- pollExecute ls
   -- manage kernel output requests
-  (evNewRequest, triggerNewRequest) <- newTriggerEvent
-  evNewRequest' <- performEvent $
-    evNewRequest <&> \() ->
-      readIORef (ls ^. kernelUUID) >>= \case
-        Nothing -> do
-          liftIO $ putStrLn' "request fail 1"
-          pure Nothing
-        Just k -> pure . Just $ ResultRequest k
-  evOutput' <-
-    performRequestAsync $
-      catMaybes evNewRequest' <&> postJson' (url <> ":8000/result")
-  evOutput'' <- filterDuplicates $ fmap decodeXhrResponse evOutput'
-  evOutput''' <- performEvent $
-    evOutput'' <&> \case
-      Nothing -> do
-        liftIO $ do
-          putStrLn' "request fail 2"
-          triggerDeadKernel ()
-        pure Nothing
-      Just (c :: UUID, r :: KernelOutput) -> do
-        liftIO $ triggerNewRequest ()
-        pure . Just $ Output c r
-  let evOutput = catMaybes evOutput'''
+  evOutput <- pollOutput ls triggerDeadKernel
   -- manage code changes
   (evCodeChange, triggerCodeChange) <- newTriggerEvent
   liftJSM
@@ -256,8 +216,8 @@ htmlBody = do
       evKernel <-
         performEvent $
           ( refreshState ls
-              >=> traverse_ (kernelUpdate ls triggerNewKernel triggerNewRequest)
-              >=> \_ -> readIORef (ls ^. kernelUUID)
+              >=> traverse_ (kernelUpdate ls triggerNewKernel)
+              >=> \_ -> tryReadMVar (ls ^. kernelUUID)
           )
             <$> mergeList
               [ evPostBuild $> StartKernel,
@@ -279,7 +239,7 @@ htmlBody = do
       evResults <-
         performEvent $
           ( refreshState ls
-              >=> traverse_ (resultsUpdate ls triggerNewKernel)
+              >=> traverse_ (resultsUpdate ls triggerDeadKernel)
               >=> snapshotResults ls
           )
             <$> mergeList [evCellsRes, evExRes, evOutput, evCode]
@@ -292,6 +252,55 @@ htmlBody = do
         "cs = new Map()"
       ]
   where
+    pollExecute :: LedgerState -> m (Event t ResultsUpdate)
+    pollExecute ls = do
+      (evExecute, triggerExecute) <- newTriggerEvent
+      fork . forever $ do
+        putStrLn' "#### waiting for ready"
+        takeMVar (ls ^. ready)
+        putStrLn' "#### ready!"
+        q <- readChan (ls ^. queue)
+        print' q
+        case q of
+          Nothing -> void $ swapMVar (ls ^. stop) False
+          Just (u, c) -> triggerExecute (u, c)
+      evExecute' <- performEventAsync $
+        evExecute <&> \(u, c) go ->
+          fork $ do
+            k <- readMVar (ls ^. kernelUUID)
+            go $ ExecuteRequest k u c
+      evX <-
+        performRequestAsync $
+          evExecute' <&> postJson' ((ls ^. url) <> ":8000/execute")
+      filterDuplicates (evX $> RunningCell)
+    --
+    pollOutput ls triggerDeadKernel = do
+      evPostBuild <- getPostBuild
+      (evNewRequest, triggerNewRequest) <- newTriggerEvent
+      evNewRequest' <- performEventAsync $
+        (evNewRequest <> evPostBuild) <&> \() go ->
+          fork $ do
+            putStrLn' "read kernel UUID"
+            k <- readMVar (ls ^. kernelUUID)
+            print' k
+            go $ ResultRequest k
+      evOutput' <-
+        performRequestAsync $
+          evNewRequest' <&> postJson' ((ls ^. url) <> ":8000/result")
+      evOutput'' <- filterDuplicates $ fmap decodeXhrResponse evOutput'
+      evOutput''' <- performEvent $
+        evOutput'' <&> \case
+          Nothing -> do
+            liftIO $ do
+              putStrLn' "request fail 2"
+              void $ triggerDeadKernel ()
+              triggerNewRequest ()
+            pure Nothing
+          Just (c :: UUID, r :: KernelOutput) -> do
+            liftIO $ triggerNewRequest ()
+            pure . Just $ Output c r
+      pure $ catMaybes evOutput'''
+    --
     refreshState :: LedgerState -> a -> Performable m a
     refreshState ls u = do
       withMVar (ls ^. uuids) $ \xs -> do
@@ -308,27 +317,25 @@ htmlBody = do
     kernelUpdate ::
       LedgerState ->
       (() -> IO ()) ->
-      (() -> IO ()) ->
       KernelUpdate ->
       Performable m ()
-    kernelUpdate ls triggerNewKernel triggerNewRequest u =
+    kernelUpdate ls triggerNewKernel u =
       case u of
         NewKernel k -> do
           putStrLn "new kernel"
-          writeIORef (ls ^. kernelUUID) k
+          putMVar (ls ^. kernelUUID) k
           putMVar (ls ^. ready) ()
-          liftIO $ triggerNewRequest ()
           writeChan (ls ^. queue) $ Just (U.nil, "__ledger = dict()")
         ShutdownKernel -> pass
         DeadKernel -> do
           putStrLn' "kernel died"
-          writeIORef (ls ^. kernelUUID) Nothing
+          void $ tryTakeMVar (ls ^. kernelUUID)
         StartKernel -> do
           putStrLn' "start new kernel"
           liftIO $ triggerNewKernel ()
     --
     resultsUpdate :: LedgerState -> (() -> IO ()) -> ResultsUpdate -> Performable m ()
-    resultsUpdate ls triggerNewKernel u =
+    resultsUpdate ls triggerDeadKernel u =
       case u of
         ExecuteCell c -> executeCell ls c
         Output c (KernelResult _ r) ->
@@ -342,8 +349,7 @@ htmlBody = do
           modifyIORef (ls ^. error) (M.alter (Just . (<> unlines rs') . fromMaybe "") c)
         Output _ (KernelMissing _) -> do
           putStrLn' "KernelMissing"
-          writeIORef (ls ^. kernelUUID) Nothing
-          liftIO $ triggerNewKernel ()
+          liftIO $ triggerDeadKernel ()
         Output _ (KernelDone _) -> do
           putStrLn' "KernelDone"
           putMVar (ls ^. ready) ()
