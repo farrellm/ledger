@@ -146,6 +146,9 @@ htmlBody ::
   m ()
 htmlBody = do
   evPostBuild <- getPostBuild
+  (evKernelUpdate, triggerKernelUpdate') <- newTriggerEvent
+  (evLedgerUpdate, triggerLedgerUpdate') <- newTriggerEvent
+  (evResultsUpdate, triggerResultsUpdate') <- newTriggerEvent
   ls <- do
     url' <-
       liftJSM $
@@ -166,17 +169,21 @@ htmlBody = do
     _ledgerState_queue <- newChan
     _ledgerState_stop <- newMVar False
     _ledgerState_ready <- newEmptyMVar
-    pure LedgerState {..}
+    pure
+      LedgerState
+        { _ledgerState_triggerKernelUpdate = triggerKernelUpdate',
+          _ledgerState_triggerLedgerUpdate = triggerLedgerUpdate',
+          _ledgerState_triggerResultsUpdate = triggerResultsUpdate',
+          ..
+        }
   -- manage new kernel requests
   (evNewKernel', triggerNewKernel) <- newTriggerEvent
   evNewKernel'' <- getAndDecode (evNewKernel' $> ((ls ^. url) <> ":8000/new_kernel"))
   evNewKernel <- NewKernel <<$>> catMaybes <$> filterDuplicates evNewKernel''
-  (evDeadKernel', triggerDeadKernel) <- newTriggerEvent
-  let evDeadKernel = evDeadKernel' $> DeadKernel
   -- manage execute requests
   evExRes <- pollExecute ls
   -- manage kernel output requests
-  evOutput <- pollOutput ls triggerDeadKernel
+  evOutput <- pollOutput ls
   -- manage code changes
   (evCodeChange, triggerCodeChange) <- newTriggerEvent
   liftJSM
@@ -222,8 +229,8 @@ htmlBody = do
             <$> mergeList
               [ evPostBuild $> StartKernel,
                 evNewKernel,
-                evDeadKernel,
-                evStartKernel
+                evStartKernel,
+                evKernelUpdate
               ]
       dynKernel <- holdDyn Nothing evKernel
       --
@@ -233,16 +240,16 @@ htmlBody = do
               >=> traverse_ (ledgerUpdate ls)
               >=> snapshotCells ls
           )
-            <$> mergeList [evAddEnd, evCellsLedger, evSaveLoad]
+            <$> mergeList [evAddEnd, evCellsLedger, evSaveLoad, evLedgerUpdate]
       dynSnapshotCells <- holdUniqDyn =<< holdDyn [] evSnapshotCells
       --
       evResults <-
         performEvent $
           ( refreshState ls
-              >=> traverse_ (resultsUpdate ls triggerDeadKernel)
+              >=> traverse_ (resultsUpdate ls)
               >=> snapshotResults ls
           )
-            <$> mergeList [evCellsRes, evExRes, evOutput, evCode]
+            <$> mergeList [evCellsRes, evExRes, evOutput, evCode, evResultsUpdate]
       dynResults <-
         holdUniqDyn
           =<< holdDyn emptyResultsSnapshot evResults
@@ -274,7 +281,8 @@ htmlBody = do
           evExecute' <&> postJson' ((ls ^. url) <> ":8000/execute")
       filterDuplicates (evX $> RunningCell)
     --
-    pollOutput ls triggerDeadKernel = do
+    pollOutput :: LedgerState -> m (Event t ResultsUpdate)
+    pollOutput ls = do
       evPostBuild <- getPostBuild
       (evNewRequest, triggerNewRequest) <- newTriggerEvent
       evNewRequest' <- performEventAsync $
@@ -293,7 +301,7 @@ htmlBody = do
           Nothing -> do
             liftIO $ do
               putStrLn' "request fail 2"
-              void $ triggerDeadKernel ()
+              (ls ^. triggerKernelUpdate) DeadKernel
               triggerNewRequest ()
             pure Nothing
           Just (c :: UUID, r :: KernelOutput) -> do
@@ -334,8 +342,8 @@ htmlBody = do
           putStrLn' "start new kernel"
           liftIO $ triggerNewKernel ()
     --
-    resultsUpdate :: LedgerState -> (() -> IO ()) -> ResultsUpdate -> Performable m ()
-    resultsUpdate ls triggerDeadKernel u =
+    resultsUpdate :: LedgerState -> ResultsUpdate -> Performable m ()
+    resultsUpdate ls u =
       case u of
         ExecuteCell c -> executeCell ls c
         Output c (KernelResult _ r) ->
@@ -349,7 +357,7 @@ htmlBody = do
           modifyIORef (ls ^. error) (M.alter (Just . (<> unlines rs') . fromMaybe "") c)
         Output _ (KernelMissing _) -> do
           putStrLn' "KernelMissing"
-          liftIO $ triggerDeadKernel ()
+          liftIO $ (ls ^. triggerKernelUpdate) DeadKernel
         Output _ (KernelDone _) -> do
           putStrLn' "KernelDone"
           putMVar (ls ^. ready) ()

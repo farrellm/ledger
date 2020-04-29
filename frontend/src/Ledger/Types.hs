@@ -11,10 +11,37 @@ import Control.Lens (makeLensesWith, underscoreFields)
 import Data.UUID.Types (UUID)
 import Relude
 
+data KernelUpdate
+  = NewKernel UUID
+  | ShutdownKernel
+  | DeadKernel
+  | StartKernel
+  deriving (Show, Eq)
+
+data LedgerUpdate
+  = AddCellEnd UUID
+  | RemoveCell UUID
+  | RaiseCell UUID
+  | LowerCell UUID
+  | LoadLedger FilePath
+  | SaveLedger
+  deriving (Show, Eq)
+
+data ResultsUpdate
+  = ExecuteCell UUID
+  | RunningCell -- UUID
+  | Output UUID KernelOutput
+  | UpdateLabel UUID Text
+  | UpdateCode UUID
+  deriving (Show, Eq)
+
 data LedgerState
   = LedgerState
       { _ledgerState_url :: Text,
         _ledgerState_file :: IORef FilePath,
+        _ledgerState_triggerKernelUpdate :: KernelUpdate -> IO (),
+        _ledgerState_triggerLedgerUpdate :: LedgerUpdate -> IO (),
+        _ledgerState_triggerResultsUpdate :: ResultsUpdate -> IO (),
         _ledgerState_kernelUUID :: MVar UUID,
         _ledgerState_uuids :: MVar [UUID],
         _ledgerState_label :: IORef (Map UUID Text),
@@ -81,27 +108,3 @@ data CellSnapshot
   deriving (Show, Eq)
 
 makeLensesWith underscoreFields ''CellSnapshot
-
-data KernelUpdate
-  = NewKernel UUID
-  | ShutdownKernel
-  | DeadKernel
-  | StartKernel
-  deriving (Show, Eq)
-
-data LedgerUpdate
-  = AddCellEnd UUID
-  | RemoveCell UUID
-  | RaiseCell UUID
-  | LowerCell UUID
-  | LoadLedger FilePath
-  | SaveLedger
-  deriving (Show, Eq)
-
-data ResultsUpdate
-  = ExecuteCell UUID
-  | RunningCell -- UUID
-  | Output UUID KernelOutput
-  | UpdateLabel UUID Text
-  | UpdateCode UUID
-  deriving (Show, Eq)
