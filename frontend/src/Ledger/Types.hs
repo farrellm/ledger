@@ -9,7 +9,7 @@ import Common
 import Control.Concurrent.Chan (Chan)
 import Control.Lens (makeLensesWith, underscoreFields)
 import Data.UUID.Types (UUID)
-import Relude
+import Ledger.Prelude
 
 data KernelUpdate
   = NewKernel UUID
