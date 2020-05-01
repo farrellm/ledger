@@ -25,8 +25,9 @@ import Ledger.Types
 import Ledger.Utility
 import Reflex.Dom.Core
 
-pollExecute :: (MonadWidget t m) => LedgerState -> m (Event t ResultsUpdate)
-pollExecute ls = do
+pollExecute :: (MonadWidget t m, MonadReader LedgerState m) => m (Event t ResultsUpdate)
+pollExecute = do
+  ls <- ask
   (evExecute, triggerExecute) <- newTriggerEvent
   fork . forever $ do
     putStrLn' "#### waiting for ready"
@@ -47,8 +48,9 @@ pollExecute ls = do
       evExecute' <&> postJson' ((ls ^. url) <> ":8000/execute")
   filterDuplicates (evX $> RunningCell)
 
-pollOutput :: (MonadWidget t m) => LedgerState -> m (Event t ResultsUpdate)
-pollOutput ls = do
+pollOutput :: (MonadWidget t m, MonadReader LedgerState m) => m (Event t ResultsUpdate)
+pollOutput = do
+  ls <- ask
   evPostBuild <- getPostBuild
   (evNewRequest, triggerNewRequest) <- newTriggerEvent
   evNewRequest' <- performEventAsync $
@@ -75,8 +77,9 @@ pollOutput ls = do
         pure . Just $ Output c r
   pure $ catMaybes evOutput'''
 
-refreshState :: MonadJSM m => LedgerState -> b -> m b
-refreshState ls u = do
+refreshState :: (MonadJSM m, MonadReader LedgerState m) => b -> m b
+refreshState u = do
+  ls <- ask
   withMVar (ls ^. uuids) $ \xs -> do
     cs <- for xs $ \x ->
       liftJSM $ do
@@ -85,11 +88,12 @@ refreshState ls u = do
         c <- fromJSVal =<< cm ^. js0 ("getValue" :: Text)
         pure $ fromMaybe "" c
     writeIORef (ls ^. code) $ M.fromList (zip xs cs)
-    for_ xs $ updateParameters ls
+    for_ xs updateParameters
   pure u
 
-kernelUpdate :: (MonadIO m) => LedgerState -> (() -> IO ()) -> KernelUpdate -> m ()
-kernelUpdate ls triggerNewKernel u =
+kernelUpdate :: (MonadIO m, MonadReader LedgerState m) => (() -> IO ()) -> KernelUpdate -> m ()
+kernelUpdate triggerNewKernel u = do
+  ls <- ask
   case u of
     NewKernel k -> do
       putStrLn "new kernel"
@@ -104,10 +108,11 @@ kernelUpdate ls triggerNewKernel u =
       putStrLn' "start new kernel"
       liftIO $ triggerNewKernel ()
 
-resultsUpdate :: (MonadIO m) => LedgerState -> ResultsUpdate -> m ()
-resultsUpdate ls u =
+resultsUpdate :: (MonadIO m, MonadReader LedgerState m) => ResultsUpdate -> m ()
+resultsUpdate u = do
+  ls <- ask
   case u of
-    ExecuteCell c -> executeCell ls c
+    ExecuteCell c -> executeCell c
     Output c (KernelResult _ r) ->
       modifyIORef (ls ^. result) (M.insert c r)
     Output c (KernelStdout _ r) ->
@@ -124,7 +129,7 @@ resultsUpdate ls u =
       putStrLn' "KernelDone"
       putMVar (ls ^. ready) ()
     UpdateLabel c l -> do
-      markDepsDirty ls c
+      markDepsDirty c
       lbl <- readIORef (ls ^. label)
       let bs = S.fromList . fmap snd . filter ((/= c) . fst) $ M.toList lbl
       modifyIORef (ls ^. badLabel) (S.delete c)
@@ -133,8 +138,8 @@ resultsUpdate ls u =
         _ -> do
           modifyIORef (ls ^. label) (M.insert c l)
           when (S.member l bs) $ modifyIORef (ls ^. badLabel) (S.insert c)
-      updateParameters ls c
-    UpdateCode c -> markDirty ls c
+      updateParameters c
+    UpdateCode c -> markDirty c
     r -> print' r
   where
     filterEsc :: Text -> Text
@@ -147,8 +152,9 @@ resultsUpdate ls u =
               b = TL.drop 1 $ TL.dropWhile (/= 'm') t'
            in a <> go b
 
-ledgerUpdate :: (MonadIO m) => LedgerState -> LedgerUpdate -> m ()
-ledgerUpdate ls u =
+ledgerUpdate :: (MonadIO m, MonadReader LedgerState m) => LedgerUpdate -> m ()
+ledgerUpdate u = do
+  ls <- ask
   case u of
     AddCellEnd x -> modifyMVar (ls ^. uuids) (<> [x])
     RemoveCell x -> modifyMVar (ls ^. uuids) $ filter (/= x)
@@ -166,8 +172,9 @@ ledgerUpdate ls u =
     insertPenultimate z [w] = [z, w]
     insertPenultimate z (w : ws) = w : insertPenultimate z ws
 
-executeCell :: (MonadIO m) => LedgerState -> UUID -> m ()
-executeCell ls x =
+executeCell :: (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
+executeCell x = do
+  ls <- ask
   withMVar (ls ^. stop) $ \s ->
     unless s $
       (!? x) <$> readIORef (ls ^. code) >>= \case
@@ -190,23 +197,25 @@ executeCell ls x =
                   args =
                     T.intercalate ", " $
                       fmap (\p -> p <> "=__ledger['" <> U.toText (lbl' M.! p) <> "']") (S.toList ps)
-                  e = case lbl !? x of
-                    Just _ -> T.concat ["__ledger['", show x, "'] = ", n', "(", args, ")"]
-                    Nothing -> T.concat [n', "(", args, ")"]
+                  e = T.concat ["__ledger['", show x, "'] = ", n', "(", args, ")"]
+                  r = case lbl !? x of
+                    Just _ -> []
+                    Nothing -> [T.concat ["__ledger['", show x, "']"]]
+                  f = unlines ([c', e] <> r)
               putStrLn' ("Execute: " <> show x)
-              print' c'
-              print' e
+              putStrLn' (toString f)
               modifyIORef (ls ^. result) $ M.delete x
               modifyIORef (ls ^. stdout) $ M.delete x
               modifyIORef (ls ^. error) $ M.delete x
               modifyIORef (ls ^. dirty) $ S.delete x
-              writeChan (ls ^. queue) $ Just (x, unlines [c', e])
+              writeChan (ls ^. queue) $ Just (x, f)
               writeChan (ls ^. queue) $ Just (U.nil, "%reset in out")
             Nothing -> bug LedgerBug
         Nothing -> bug LedgerBug
 
-updateParameters :: (MonadIO m) => LedgerState -> UUID -> m ()
-updateParameters ls x =
+updateParameters :: (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
+updateParameters x = do
+  ls <- ask
   (!? x) <$> readIORef (ls ^. code) >>= \case
     Just c -> do
       lbl <- readIORef (ls ^. label)
@@ -221,15 +230,17 @@ updateParameters ls x =
       modifyIORef (ls ^. parameters) (M.insert x ps)
     Nothing -> modifyIORef (ls ^. parameters) (M.delete x)
 
-markDirty :: (MonadIO m) => LedgerState -> UUID -> m ()
-markDirty ls u = do
+markDirty :: (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
+markDirty u = do
+  ls <- ask
   d <- S.member u <$> readIORef (ls ^. dirty)
   unless d $ do
     modifyIORef (ls ^. dirty) (S.insert u)
-    markDepsDirty ls u
+    markDepsDirty u
 
-markDepsDirty :: forall m. (MonadIO m) => LedgerState -> UUID -> m ()
-markDepsDirty ls x = do
+markDepsDirty :: forall m. (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
+markDepsDirty x = do
+  ls <- ask
   pss <- M.toList <$> readIORef (ls ^. parameters)
   bad <- readIORef (ls ^. badLabel)
   (!? x) <$> readIORef (ls ^. label) >>= \case
@@ -237,5 +248,5 @@ markDepsDirty ls x = do
       let ys = fst <$> filter (S.member l . snd) pss
       for_ ys $ \y -> do
         d <- S.member y <$> readIORef (ls ^. dirty)
-        unless d $ markDirty ls y
+        unless d $ markDirty y
     _ -> pass

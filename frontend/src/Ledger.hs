@@ -113,95 +113,98 @@ htmlBody = do
           _ledgerState_triggerResultsUpdate = triggerResultsUpdate',
           ..
         }
-  -- manage new kernel requests
-  (evNewKernel', triggerNewKernel) <- newTriggerEvent
-  evNewKernel'' <- getAndDecode (evNewKernel' $> ((ls ^. url) <> ":8000/new_kernel"))
-  evNewKernel <- NewKernel <<$>> catMaybes <$> filterDuplicates evNewKernel''
-  -- manage execute requests
-  evExRes <- pollExecute ls
-  -- manage kernel output requests
-  evOutput <- pollOutput ls
-  -- manage code changes
-  (evCodeChange, triggerCodeChange) <- newTriggerEvent
-  liftJSM
-    . (global <# ("onCodeChange" :: Text))
-    . fun
-    $ \_ _ [u] -> valToText u >>= liftIO . triggerCodeChange
-  evCodeChange' <- debounce 0.2 evCodeChange
-  let evCode = UpdateCode <$> catMaybes (U.fromText <$> evCodeChange')
-  --
-  rec (evStartKernel, evSaveLoad) <- navbar dynKernel
-      ((evCellsRes, evCellsLedger), evAddEnd) <-
-        divClass "section" . divClass "container" $ do
-          dynEvCells <- simpleList dynCodes $ \dynCode -> do
-            dynCell <- holdUniqDyn (zipDynWith extractCell dynCode dynResults)
-            cell dynCell dynCode
-          let evCells = switchDyn $ leftmost <$> dynEvCells
-          (elAdd, _) <-
-            elAttr' "button" ("class" =: "button" <> "type" =: "button")
-              . elAttr "span" ("class" =: "icon")
-              $ elAttr "i" ("class" =: "fas fa-plus") blank
-          let evAdd = domEvent Click elAdd
-              evUUID = AddCellEnd <$> nextUUID evAdd
-          pure (fanEither evCells, evUUID)
-      void . dyn $
-        dynKernel <&> \case
-          Nothing -> blank
-          Just _ ->
-            elAttr
-              "script"
-              ( "type" =: "text/javascript"
-                  <> "src" =: "codemirror/mode/python/python.js"
-                  <> "defer" =: ""
-                  <> "async" =: "false"
-              )
-              blank
-      --
-      evKernel <-
-        performEvent $
-          ( refreshState ls
-              >=> traverse_ (kernelUpdate ls triggerNewKernel)
-              >=> \_ -> tryReadMVar (ls ^. kernelUUID)
-          )
-            <$> mergeList
-              [ evPostBuild $> StartKernel,
-                evNewKernel,
-                evStartKernel,
-                evKernelUpdate
-              ]
-      dynKernel <- holdDyn Nothing evKernel
-      --
-      evCodes <-
-        performEvent $
-          ( refreshState ls
-              >=> traverse_ (ledgerUpdate ls)
-              >=> snapshotCells ls
-          )
-            <$> mergeList [evAddEnd, evCellsLedger, evSaveLoad, evLedgerUpdate]
-      dynCodes <- holdUniqDyn =<< holdDyn [] evCodes
-      --
-      evResults <-
-        performEvent $
-          ( refreshState ls
-              >=> traverse_ (resultsUpdate ls)
-              >=> snapshotResults ls
-          )
-            <$> mergeList [evCellsRes, evExRes, evOutput, evCode, evResultsUpdate]
-      dynResults <-
-        holdUniqDyn
-          =<< holdDyn emptyResultsSnapshot evResults
-  el "script" . text $ "cms = new Map()"
+  usingReaderT ls $ do
+    -- manage new kernel requests
+    (evNewKernel', triggerNewKernel) <- newTriggerEvent
+    evNewKernel'' <- getAndDecode (evNewKernel' $> ((ls ^. url) <> ":8000/new_kernel"))
+    evNewKernel <- NewKernel <<$>> catMaybes <$> filterDuplicates evNewKernel''
+    -- manage execute requests
+    evExRes <- pollExecute
+    -- manage kernel output requests
+    evOutput <- pollOutput
+    -- manage code changes
+    (evCodeChange, triggerCodeChange) <- newTriggerEvent
+    liftJSM
+      . (global <# ("onCodeChange" :: Text))
+      . fun
+      $ \_ _ [u] -> valToText u >>= liftIO . triggerCodeChange
+    evCodeChange' <- debounce 0.2 evCodeChange
+    let evCode = UpdateCode <$> catMaybes (U.fromText <$> evCodeChange')
+    --
+    rec (evStartKernel, evSaveLoad) <- navbar dynKernel
+        ((evCellsRes, evCellsLedger), evAddEnd) <-
+          divClass "section" . divClass "container" $ do
+            dynEvCells <- simpleList dynCodes $ \dynCode -> do
+              dynCell <- holdUniqDyn (zipDynWith extractCell dynCode dynResults)
+              cell dynCell dynCode
+            let evCells = switchDyn $ leftmost <$> dynEvCells
+            (elAdd, _) <-
+              elAttr' "button" ("class" =: "button" <> "type" =: "button")
+                . elAttr "span" ("class" =: "icon")
+                $ elAttr "i" ("class" =: "fas fa-plus") blank
+            let evAdd = domEvent Click elAdd
+                evUUID = AddCellEnd <$> nextUUID evAdd
+            pure (fanEither evCells, evUUID)
+        void . dyn $
+          dynKernel <&> \case
+            Nothing -> blank
+            Just _ ->
+              elAttr
+                "script"
+                ( "type" =: "text/javascript"
+                    <> "src" =: "codemirror/mode/python/python.js"
+                    <> "defer" =: ""
+                    <> "async" =: "false"
+                )
+                blank
+        --
+        evKernel <-
+          performEvent $
+            ( refreshState
+                >=> traverse_ (kernelUpdate triggerNewKernel)
+                >=> \_ -> tryReadMVar (ls ^. kernelUUID)
+            )
+              <$> mergeList
+                [ evPostBuild $> StartKernel,
+                  evNewKernel,
+                  evStartKernel,
+                  evKernelUpdate
+                ]
+        dynKernel <- holdDyn Nothing evKernel
+        --
+        evCodes <-
+          performEvent $
+            ( refreshState
+                >=> traverse_ ledgerUpdate
+                >=> snapshotCells
+            )
+              <$> mergeList [evAddEnd, evCellsLedger, evSaveLoad, evLedgerUpdate]
+        dynCodes <- holdUniqDyn =<< holdDyn [] evCodes
+        --
+        evResults <-
+          performEvent $
+            ( refreshState
+                >=> traverse_ resultsUpdate
+                >=> snapshotResults
+            )
+              <$> mergeList [evCellsRes, evExRes, evOutput, evCode, evResultsUpdate]
+        dynResults <-
+          holdUniqDyn
+            =<< holdDyn emptyResultsSnapshot evResults
+    el "script" . text $ "cms = new Map()"
 
-snapshotCells :: (MonadIO m) => LedgerState -> () -> m [CodeSnapshot]
-snapshotCells ls () = do
+snapshotCells :: (MonadIO m, MonadReader LedgerState m) => () -> m [CodeSnapshot]
+snapshotCells () = do
+  ls <- ask
   l <- readIORef (ls ^. label)
   b <- readIORef (ls ^. badLabel)
   c <- readIORef (ls ^. code)
   fmap (\u -> CodeSnapshot u (fromMaybe "" (l !? u)) (S.member u b) (fromMaybe "" (c !? u)))
     <$> readMVar (ls ^. uuids)
 
-snapshotResults :: (MonadIO m) => LedgerState -> () -> m ResultsSnapshot
-snapshotResults ls () = do
+snapshotResults :: (MonadIO m, MonadReader LedgerState m) => () -> m ResultsSnapshot
+snapshotResults () = do
+  ls <- ask
   _resultsSnapshot_label <- readIORef (ls ^. label)
   _resultsSnapshot_badLabel <- readIORef (ls ^. badLabel)
   _resultsSnapshot_parameters <- readIORef (ls ^. parameters)
