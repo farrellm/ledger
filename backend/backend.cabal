@@ -30,22 +30,18 @@ executable backend
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
   build-depends:       base-noprelude >=4.13 && <4.14
                      , monad-control
-                     , adjunctions
                      , common
                      , aeson
                      , aeson-pretty
                      , casing
                      , containers
                      , directory
-                     , distributive
                      , filepath
                      , lens
                      , lifted-async
                      , lifted-base
-                     -- , lucid
                      , network
                      , regex-tdfa
-                     -- , reflex-dom
                      , relude
                      , scotty
                      , singletons

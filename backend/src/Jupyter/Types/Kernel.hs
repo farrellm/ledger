@@ -4,7 +4,7 @@
 module Jupyter.Types.Kernel where
 
 import Control.Concurrent.Chan.Lifted (Chan)
-import Control.Lens.TH
+import Control.Lens (makeFields)
 import Data.Aeson
   ( FromJSON (..),
     ToJSON (..),
@@ -20,46 +20,50 @@ import System.ZMQ4.Monadic (Dealer, Req, Socket, Sub)
 
 data KernelSpec
   = KernelSpec
-      { _displayName :: Text,
-        _language :: Text,
-        _argv :: NonEmpty String
+      { kernelSpecDisplayName :: Text,
+        kernelSpecLanguage :: Text,
+        kernelSpecArgv :: NonEmpty String
       }
   deriving (Generic, Show)
 
+makeFields ''KernelSpec
+
 instance FromJSON KernelSpec where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 10)
 
 data KernelConfig
   = KernelConfig
-      { _shellPort :: PortNumber,
-        _iopubPort :: PortNumber,
-        _stdinPort :: PortNumber,
-        _controlPort :: PortNumber,
-        _hbPort :: PortNumber,
-        _ip :: Text,
-        _key :: Text,
-        _transport :: Text
+      { kernelConfigShellPort :: PortNumber,
+        kernelConfigIopubPort :: PortNumber,
+        kernelConfigStdinPort :: PortNumber,
+        kernelConfigControlPort :: PortNumber,
+        kernelConfigHbPort :: PortNumber,
+        kernelConfigIp :: Text,
+        kernelConfigKey :: Text,
+        kernelConfigTransport :: Text
       }
   deriving (Generic, Show)
 
+makeFields ''KernelConfig
+
 instance ToJSON KernelConfig where
 
-  toJSON = genericToJSON customOptions
+  toJSON = genericToJSON (fieldsOptions 12)
 
-  toEncoding = genericToEncoding customOptions
+  toEncoding = genericToEncoding (fieldsOptions 12)
 
 data Kernel z
   = Kernel
-      { _kernelIp :: Text,
-        _kernelUsername :: Username,
-        _kernelSession :: UUID,
-        _kernelShell :: Socket z Dealer,
-        _kernelIopub :: Socket z Sub,
-        _kernelStdin :: Socket z Dealer,
-        _kernelControl :: Socket z Dealer,
-        _kernelHb :: Socket z Req,
-        _kernelState :: MVar ExecutionState,
-        _kernelOutput :: MVar (Map UUID (Chan KernelOutput))
+      { kernelIp :: Text,
+        kernelUsername :: Username,
+        kernelSession :: UUID,
+        kernelShell :: Socket z Dealer,
+        kernelIopub :: Socket z Sub,
+        kernelStdin :: Socket z Dealer,
+        kernelControl :: Socket z Dealer,
+        kernelHb :: Socket z Req,
+        kernelState :: MVar ExecutionState,
+        kernelOutput :: MVar (Map UUID (Chan KernelOutput))
       }
   deriving (Generic)
 
@@ -76,16 +80,16 @@ class KernelSocket' s where
   kernelSocket :: SKernelSocket s -> Kernel z -> Socket z (SocketType s)
 
 instance KernelSocket' 'Shell where
-  kernelSocket _ = _kernelShell
+  kernelSocket _ = kernelShell
 
 instance KernelSocket' 'IOPub where
-  kernelSocket _ = _kernelIopub
+  kernelSocket _ = kernelIopub
 
 instance KernelSocket' 'Stdin where
-  kernelSocket _ = _kernelStdin
+  kernelSocket _ = kernelStdin
 
 instance KernelSocket' 'Control where
-  kernelSocket _ = _kernelControl
+  kernelSocket _ = kernelControl
 
 instance KernelSocket' 'Hb where
-  kernelSocket _ = _kernelHb
+  kernelSocket _ = kernelHb

@@ -11,8 +11,6 @@ import Data.Aeson
   ( FromJSON (..),
     ToJSON (..),
     genericParseJSON,
-    genericToEncoding,
-    genericToJSON,
   )
 import qualified Data.Aeson.Types as A
 import Data.Singletons
@@ -30,14 +28,9 @@ import Text.Casing (fromHumps, toQuietSnake)
 newtype Username = Username String
   deriving (Generic, Show)
 
-instance FromJSON Username where
-  parseJSON = genericParseJSON customOptions
+instance FromJSON Username
 
-instance ToJSON Username where
-
-  toJSON = genericToJSON customOptions
-
-  toEncoding = genericToEncoding customOptions
+instance ToJSON Username
 
 $( singletons
      [d|
@@ -56,7 +49,7 @@ $( singletons
  )
 
 instance FromJSON IOPubType where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON enumOptions
 
 instance FromJSON (SomeSing IOPubType) where
   parseJSON v = toSing <$> parseJSON v
@@ -73,7 +66,7 @@ data ExecutionState = Starting | Busy | Idle
   deriving (Generic, Show, Eq)
 
 instance FromJSON ExecutionState where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON enumOptions
 
 type family MessageSocket m where
   MessageSocket 'Shutdown = 'Control

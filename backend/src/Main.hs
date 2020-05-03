@@ -33,22 +33,6 @@ destruct kernels = do
   waitKernels kernels
   putStrLn' "destructed"
 
-test :: IO ()
-test = do
-  kernels <- newMVar mempty :: IO (MVar (Map UUID KernelControl))
-  handle @AsyncException (\_ -> destruct =<< readMVar kernels) $ do
-    u <- nextJust (liftIO nextUUID)
-    k <- KernelControl <$> newChan <*> newChan <*> newEmptyMVar <*> newEmptyMVar
-    modifyMVar_ kernels (pure . M.insert u k)
-    void $ fork (runKernelName "python3" k)
-    writeChan (_in k) (KernelExecute u $ unlines ["print('yolo')", "2 + 2"])
-    -- writeChan (_in k) (KernelExecute $ unlines ["print 'yolo'", "2 + 2"])
-    print' =<< readChan (_out k)
-    print' =<< readChan (_out k)
-    print' =<< readChan (_out k)
-    writeChan (_in k) KernelShutdown
-    waitKernels =<< readMVar kernels
-
 main :: IO ()
 main = do
   putStrLn "Hello, Haskell!"
@@ -64,7 +48,6 @@ main = do
       --
       get "/" $ file "./frontend/index.html"
       --
-      get "/uuid" $ text . fromStrict . U.toText =<< nextJust (liftIO nextUUID)
       --
       get "/new_kernel" $ do
         u <- nextJust (liftIO nextUUID)

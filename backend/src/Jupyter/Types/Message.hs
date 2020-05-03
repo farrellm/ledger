@@ -1,5 +1,4 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -85,26 +84,22 @@ instance (SingI m, SingI r) => FromJSON (MsgType m r) where
             A.String v | p == v -> pure $ MsgType m r
             _ -> fail err
 
-instance Field1 (MsgType m r) (MsgType m' r) (SMessageType m) (SMessageType m')
-
-instance Field2 (MsgType m r) (MsgType m r') (SReqRep r) (SReqRep r')
-
 type family MsgUUID (r :: ReqRep) where
   MsgUUID 'Request = UUID
   MsgUUID 'Reply = Text
 
 data Header (m :: MessageType) (r :: ReqRep)
   = Header
-      { _msgId :: MsgUUID r,
-        _username :: Username,
-        _session :: MsgUUID r,
-        _date :: UTCTime,
-        _msgType :: MsgType m r,
-        _version :: Text
+      { headerMsgId :: MsgUUID r,
+        headerUsername :: Username,
+        headerSession :: MsgUUID r,
+        headerDate :: UTCTime,
+        headerMsgType :: MsgType m r,
+        headerVersion :: Text
       }
   deriving (Generic)
 
-makeFieldsNoPrefix ''Header
+makeFields ''Header
 
 deriving instance Show (Header m 'Request)
 
@@ -112,15 +107,15 @@ deriving instance Show (Header m 'Reply)
 
 instance ToJSON (Header m 'Request) where
 
-  toJSON = genericToJSON customOptions
+  toJSON = genericToJSON (fieldsOptions 6)
 
-  toEncoding = genericToEncoding customOptions
+  toEncoding = genericToEncoding (fieldsOptions 6)
 
 instance (SingI m) => FromJSON (Header m 'Reply) where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 6)
 
 instance (SingI m) => FromJSON (Header m 'Request) where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 6)
 
 type family ParentHeader (m :: MessageType) (r :: ReqRep) where
   ParentHeader m 'Request = ()
@@ -128,16 +123,16 @@ type family ParentHeader (m :: MessageType) (r :: ReqRep) where
 
 data Message (m :: MessageType) (r :: ReqRep)
   = Message
-      { _zmqIdent :: Text,
-        _header :: Header m r,
-        _parentHeader :: ParentHeader m r,
-        _metadata :: HashMap Text A.Value,
-        _content :: MsgContent m r,
-        _buffers :: [Text]
+      { messageZmqIdent :: Text,
+        messageHeader :: Header m r,
+        messageParentHeader :: ParentHeader m r,
+        messageMetadata :: HashMap Text A.Value,
+        messageContent :: MsgContent m r,
+        messageBuffers :: [Text]
       }
   deriving (Generic)
 
-makeFieldsNoPrefix ''Message
+makeFields ''Message
 
 deriving instance
   ( Show (Header m r),
@@ -148,12 +143,12 @@ deriving instance
 
 instance (ToJSON (MsgContent m 'Request)) => ToJSON (Message m 'Request) where
 
-  toJSON = genericToJSON customOptions
+  toJSON = genericToJSON (fieldsOptions 7)
 
-  toEncoding = genericToEncoding customOptions
+  toEncoding = genericToEncoding (fieldsOptions 7)
 
 instance (SingI m, FromJSON (MsgContent m 'Reply)) => FromJSON (Message m 'Reply) where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 7)
 
 messageSocket ::
   forall s m z.
@@ -169,12 +164,12 @@ instance
   where
   deserialize (ids : "<IDS|MSG>" : _s : h : ph : md : c : bs) =
     let res = do
-          _header <- eitherDecode $ toLazy h
-          _parentHeader <- eitherDecode $ toLazy ph
-          _metadata <- eitherDecode $ toLazy md
-          _content <- eitherDecode $ toLazy c
-          _buffers <- traverse (eitherDecode . toLazy) bs
-          pure Message {_zmqIdent = decodeUtf8 ids, ..}
+          messageHeader <- eitherDecode $ toLazy h
+          messageParentHeader <- eitherDecode $ toLazy ph
+          messageMetadata <- eitherDecode $ toLazy md
+          messageContent <- eitherDecode $ toLazy c
+          messageBuffers <- traverse (eitherDecode . toLazy) bs
+          pure Message {messageZmqIdent = decodeUtf8 ids, ..}
      in case res of
           Right msg -> msg
           Left err -> bug $ DeserializeBug err
@@ -205,69 +200,72 @@ instance
 
 data IOPubHeader e
   = IOPubHeader
-      { _msgId :: Text,
-        _username :: Username,
-        _session :: Text,
-        _date :: UTCTime,
-        _msgType :: SIOPubType e,
-        _version :: Text
+      { iOPubHeaderMsgId :: Text,
+        iOPubHeaderUsername :: Username,
+        iOPubHeaderSession :: Text,
+        iOPubHeaderDate :: UTCTime,
+        iOPubHeaderMsgType :: SIOPubType e,
+        iOPubHeaderVersion :: Text
       }
   deriving (Generic, Show)
 
-makeFieldsNoPrefix ''IOPubHeader
+makeFields ''IOPubHeader
 
 instance (SingI e) => FromJSON (IOPubHeader e) where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 11)
 
 instance GShow IOPubHeader where gshowsPrec = showsPrec
 
 data StatusParentHeader
   = StatusParentHeader
-      { _msgId :: Maybe UUID,
-        _username :: Maybe Username,
-        _session :: Maybe Text,
-        _date :: Maybe UTCTime,
-        _msgType :: Maybe (MsgType 'Execute 'Request),
-        _version :: Maybe Text
+      { statusParentHeaderMsgId :: Maybe UUID,
+        statusParentHeaderUsername :: Maybe Username,
+        statusParentHeaderSession :: Maybe Text,
+        statusParentHeaderDate :: Maybe UTCTime,
+        statusParentHeaderMsgType :: Maybe (MsgType 'Execute 'Request),
+        statusParentHeaderVersion :: Maybe Text
       }
   deriving (Generic, Show)
 
-makeFieldsNoPrefix ''StatusParentHeader
+makeFields ''StatusParentHeader
 
 instance FromJSON StatusParentHeader where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 18)
 
 data IOPubParentHeader
   = IOPubParentHeader
-      { _msgId :: UUID,
-        _username :: Username,
-        _session :: UUID,
-        _date :: UTCTime,
-        _msgType :: Text,
-        _version :: Text
+      { iOPubParentHeaderMsgId :: UUID,
+        iOPubParentHeaderUsername :: Username,
+        iOPubParentHeaderSession :: UUID,
+        iOPubParentHeaderDate :: UTCTime,
+        iOPubParentHeaderMsgType :: Text,
+        iOPubParentHeaderVersion :: Text
       }
   deriving (Generic, Show)
 
-makeFieldsNoPrefix ''IOPubParentHeader
+makeFields ''IOPubParentHeader
 
 instance ToJSON IOPubParentHeader where
-  toJSON = genericToJSON customOptions
+
+  toJSON = genericToJSON (fieldsOptions 17)
+
+  toEncoding = genericToEncoding (fieldsOptions 17)
 
 instance FromJSON IOPubParentHeader where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 17)
 
 data IOPubMessage e
   = IOPubMessage
-      { _zmqIdent :: Text,
-        _header :: IOPubHeader e,
-        _parentHeader :: IOPubParentHeader,
-        _metadata :: HashMap Text A.Value,
-        _content :: IOPubContent e,
-        _buffers :: [Text]
+      { iOPubMessageZmqIdent :: Text,
+        iOPubMessageHeader :: IOPubHeader e,
+        iOPubMessageParentHeader :: IOPubParentHeader,
+        iOPubMessageMetadata :: HashMap Text A.Value,
+        iOPubMessageContent :: IOPubContent e,
+        iOPubMessageBuffers :: [Text]
       }
   deriving (Generic)
 
-makeFieldsNoPrefix ''IOPubMessage
+makeFields ''IOPubMessage
 
 deriving instance (Show (IOPubContent e)) => Show (IOPubMessage e)
 
@@ -283,7 +281,7 @@ instance
   (SingI m, FromJSON (IOPubContent m)) =>
   FromJSON (IOPubMessage m)
   where
-  parseJSON = genericParseJSON customOptions
+  parseJSON = genericParseJSON (fieldsOptions 12)
 
 data IOPubInsts e where
   IOPubInsts ::
@@ -318,15 +316,13 @@ instance Deserialize (Some IOPubMessage) where
       go :: forall e. SIOPubType e -> Either String (Some IOPubMessage)
       go e = case iopubInsts e of
         IOPubInsts -> do
-          -- c' <- eitherDecode $ toLazy c
-          -- traceShowM (c' :: A.Object)
-          _header <- case singInstance e of
+          iOPubMessageHeader <- case singInstance e of
             SingInstance -> eitherDecode @(IOPubHeader e) $ toLazy h
-          _parentHeader <- eitherDecode $ toLazy ph
-          _metadata <- eitherDecode $ toLazy md
-          _content <- eitherDecode $ toLazy c
-          _buffers <- traverse (eitherDecode . toLazy) bs
-          pure $ Some IOPubMessage {_zmqIdent = decodeUtf8 ids, ..}
+          iOPubMessageParentHeader <- eitherDecode $ toLazy ph
+          iOPubMessageMetadata <- eitherDecode $ toLazy md
+          iOPubMessageContent <- eitherDecode $ toLazy c
+          iOPubMessageBuffers <- traverse (eitherDecode . toLazy) bs
+          pure $ Some IOPubMessage {iOPubMessageZmqIdent = decodeUtf8 ids, ..}
   deserialize msg = bug $ DeserializeBug ("invalid message: " <> show msg)
 
 data MsgInsts e where
@@ -355,14 +351,14 @@ msgInsts SKernelInfo = MsgInsts
 
 newHeader :: (MonadIO m) => Kernel z -> SMessageType e -> m (Header e 'Request)
 newHeader kernel mt = do
-  _date <- liftIO getCurrentTime
-  _msgId <- nextJust $ liftIO nextUUID
+  headerDate <- liftIO getCurrentTime
+  headerMsgId <- nextJust $ liftIO nextUUID
   pure
     Header
-      { _username = kernel ^. username,
-        _session = kernel ^. session,
-        _msgType = MsgType mt SRequest,
-        _version = "5.0",
+      { headerUsername = kernel ^. username,
+        headerSession = kernel ^. session,
+        headerMsgType = MsgType mt SRequest,
+        headerVersion = "5.0",
         ..
       }
 
@@ -373,27 +369,27 @@ newRequest ::
   m (Message e 'Request)
 newRequest kernel c =
   withSing $ \m -> do
-    _header <- newHeader kernel m
+    messageHeader <- newHeader kernel m
     pure $
       Message
-        { _zmqIdent = "",
-          _parentHeader = (),
-          _metadata = mempty,
-          _content = c,
-          _buffers = mempty,
+        { messageZmqIdent = "",
+          messageParentHeader = (),
+          messageMetadata = mempty,
+          messageContent = c,
+          messageBuffers = mempty,
           ..
         }
 
 newHeartbeat ::
   MonadIO m => Kernel z -> m (Message 'Heartbeat 'Request)
 newHeartbeat kernel = do
-  _header <- newHeader kernel SHeartbeat
+  messageHeader <- newHeader kernel SHeartbeat
   pure
     Message
-      { _zmqIdent = "",
-        _parentHeader = (),
-        _metadata = mempty,
-        _content = HeartbeatContent,
-        _buffers = mempty,
+      { messageZmqIdent = "",
+        messageParentHeader = (),
+        messageMetadata = mempty,
+        messageContent = HeartbeatContent,
+        messageBuffers = mempty,
         ..
       }

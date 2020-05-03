@@ -1,5 +1,4 @@
 {-# LANGUAGE ApplicativeDo #-}
-{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -103,14 +102,14 @@ mkConf ip_ =
             do
               -- S.setSocketOption sock S.Linger 0
               S.bind hbSock $ S.SockAddrInet 0 ip_
-              _shellPort <- S.socketPort shellSock
-              _iopubPort <- S.socketPort iopubSock
-              _stdinPort <- S.socketPort stdinSock
-              _controlPort <- S.socketPort controlSock
-              _hbPort <- S.socketPort hbSock
-              let _ip = renderAddress ip_
-                  _key = ""
-                  _transport = "tcp"
+              kernelConfigShellPort <- S.socketPort shellSock
+              kernelConfigIopubPort <- S.socketPort iopubSock
+              kernelConfigStdinPort <- S.socketPort stdinSock
+              kernelConfigControlPort <- S.socketPort controlSock
+              kernelConfigHbPort <- S.socketPort hbSock
+              let kernelConfigIp = renderAddress ip_
+                  kernelConfigKey = ""
+                  kernelConfigTransport = "tcp"
               pure KernelConfig {..}
 
 withKernel ::
@@ -129,7 +128,7 @@ withKernel conf spec kCtrl z =
     pat <-
       either (die . ("invalid regex: " <>)) pure $
         compile defaultCompOpt defaultExecOpt "\\{([A-Za-z0-9_]+)\\}"
-    let (cmd :| args) = _argv spec <&> \s ->
+    let (cmd :| args) = (spec ^. argv) <&> \s ->
           case regexec pat s of
             Right (Just (a, _, b, [k])) -> maybe s (\m -> a <> m <> b) $ ns !? k
             _ -> s
@@ -159,25 +158,25 @@ withKernel conf spec kCtrl z =
           setLinger lingerTime stdin_
           setLinger lingerTime control_
           setLinger lingerTime hb_
-          connect shell_ $ makeUrl (_shellPort conf)
-          connect iopub_ $ makeUrl (_iopubPort conf)
-          connect stdin_ $ makeUrl (_stdinPort conf)
-          connect control_ $ makeUrl (_controlPort conf)
-          connect hb_ $ makeUrl (_hbPort conf)
+          connect shell_ $ makeUrl (conf ^. shellPort)
+          connect iopub_ $ makeUrl (conf ^. iopubPort)
+          connect stdin_ $ makeUrl (conf ^. stdinPort)
+          connect control_ $ makeUrl (conf ^. controlPort)
+          connect hb_ $ makeUrl (conf ^. hbPort)
           subscribe iopub_ ""
           --
-          _kernelUsername <- Username <$> liftIO getEffectiveUserName
-          _kernelSession <- liftIO $ nextJust nextUUID
-          _kernelState <- newMVar Idle
-          _kernelOutput <- newMVar mempty
+          kernelUsername <- Username <$> liftIO getEffectiveUserName
+          kernelSession <- liftIO $ nextJust nextUUID
+          kernelState <- newMVar Idle
+          kernelOutput <- newMVar mempty
           let kernel =
                 Kernel
-                  { _kernelIp = _ip conf,
-                    _kernelShell = shell_,
-                    _kernelIopub = iopub_,
-                    _kernelStdin = stdin_,
-                    _kernelControl = control_,
-                    _kernelHb = hb_,
+                  { kernelIp = conf ^. ip,
+                    kernelShell = shell_,
+                    kernelIopub = iopub_,
+                    kernelStdin = stdin_,
+                    kernelControl = control_,
+                    kernelHb = hb_,
                     ..
                   }
           putStrLn' ("#### kernel session: " <> show (kernel ^. session))
@@ -185,7 +184,7 @@ withKernel conf spec kCtrl z =
           void $ communicate kernel KernelInfoRequest
           flushIOPub kernel
           res <- z kernel
-          void $ communicate kernel ShutdownContent {_restart = False}
+          void $ communicate kernel ShutdownContent {shutdownContentRestart = False}
           print' =<< waitExitCode p
           pure res
   where
@@ -257,12 +256,12 @@ runKernel spec kCtrl = do
         execute
           kernel
           ExecuteRequest
-            { _code = expr,
-              _silent = False,
-              _storeHistory = True,
-              _userExpressions = mempty,
-              _allowStdin = False,
-              _stopOnError = True
+            { executeRequestCode = expr,
+              executeRequestSilent = False,
+              executeRequestStoreHistory = True,
+              executeRequestUserExpressions = mempty,
+              executeRequestAllowStdin = False,
+              executeRequestStopOnError = True
             }
       let go = do
             x <- readChan eOut

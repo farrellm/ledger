@@ -17,12 +17,17 @@ import Data.UUID.Types (UUID)
 import Relude
 import Text.Casing (fromHumps, toQuietSnake)
 
-customOptions :: Options
-customOptions =
+enumOptions :: Options
+enumOptions =
+  defaultOptions
+    { constructorTagModifier = toQuietSnake . fromHumps
+    }
+
+fieldsOptions :: Int -> Options
+fieldsOptions n =
   defaultOptions
     { fieldLabelModifier =
-        toQuietSnake . fromHumps . takeWhile (/= '_') . drop 1,
-      constructorTagModifier = toQuietSnake . fromHumps,
+        toQuietSnake . fromHumps . takeWhile (/= '_') . drop n,
       omitNothingFields = True
     }
 
