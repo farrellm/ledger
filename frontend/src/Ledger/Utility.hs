@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
 module Ledger.Utility where
@@ -7,6 +8,7 @@ module Ledger.Utility where
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Chan (Chan)
 import qualified Control.Concurrent.Chan as Chan
+import Control.Lens
 import Control.Monad.Fix (MonadFix)
 import Data.Aeson (ToJSON, encode)
 import qualified Data.Attoparsec.Combinator as A
@@ -17,6 +19,7 @@ import qualified Data.Text as T
 import Data.UUID.Types (UUID)
 import Data.Witherable (Filterable, catMaybes, mapMaybe)
 import Ledger.Prelude
+import Ledger.Types
 import Reflex.Dom.Core
 import System.Random (randomIO)
 
@@ -101,3 +104,37 @@ addReturn cs =
   where
     isSpaces :: Text -> Bool
     isSpaces = all isSpace . toString
+
+snapshotCells :: (MonadIO m, MonadReader LedgerState m) => () -> m [CodeSnapshot]
+snapshotCells () = do
+  ls <- ask
+  l <- readIORef (ls ^. label)
+  b <- readIORef (ls ^. badLabel)
+  c <- readIORef (ls ^. code)
+  fmap (\u -> CodeSnapshot u (fromMaybe "" (l !? u)) (S.member u b) (fromMaybe "" (c !? u)))
+    <$> readMVar (ls ^. uuids)
+
+snapshotResults :: (MonadIO m, MonadReader LedgerState m) => () -> m ResultsSnapshot
+snapshotResults () = do
+  ls <- ask
+  _resultsSnapshot_label <- readIORef (ls ^. label)
+  _resultsSnapshot_badLabel <- readIORef (ls ^. badLabel)
+  _resultsSnapshot_parameters <- readIORef (ls ^. parameters)
+  _resultsSnapshot_code <- readIORef (ls ^. code)
+  _resultsSnapshot_result <- readIORef (ls ^. result)
+  _resultsSnapshot_stdout <- readIORef (ls ^. stdout)
+  _resultsSnapshot_error <- readIORef (ls ^. error)
+  _resultsSnapshot_dirty <- readIORef (ls ^. dirty)
+  pure ResultsSnapshot {..}
+
+extractCell :: CodeSnapshot -> ResultsSnapshot -> CellSnapshot
+extractCell c r =
+  let u = c ^. uuid
+   in CellSnapshot
+        (r ^. label . at u)
+        (S.member u (r ^. badLabel))
+        (r ^. parameters . at u)
+        (r ^. result . at u)
+        (r ^. stdout . at u)
+        (r ^. error . at u)
+        (S.member u $ r ^. dirty)
