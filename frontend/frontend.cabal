@@ -21,6 +21,7 @@ library
                      , Ledger.Events
                      , Ledger.JS
                      , Ledger.Prelude
+                     , Ledger.Static
                      , Ledger.Types
                      , Ledger.Widgets
                      , Ledger.Utility
@@ -29,9 +30,12 @@ library
                      , aeson
                      , attoparsec
                      , containers
+                     , filepath
+                     , ghcjs-dom
                      , jsaddle
                      , jsaddle-warp
                      , lens
+                     , network-uri
                      , random
                      , relude
                      , reflex-dom

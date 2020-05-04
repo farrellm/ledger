@@ -2,7 +2,9 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
@@ -24,6 +26,37 @@ import Ledger.Prelude
 import Ledger.Types
 import Ledger.Utility
 import Reflex.Dom.Core
+import System.FilePath ((</>))
+
+initializeLedger :: (MonadWidget t m, MonadReader LedgerState m) => m (Event t FilePath)
+initializeLedger = do
+  ls <- ask
+  evPostBuild <- getPostBuild
+  evCwd <-
+    filterDuplicates =<< catMaybes
+      <$> getAndDecode (evPostBuild $> ((ls ^. url) <> ":8000/home"))
+  performEvent_ $ evCwd <&> writeIORef (ls ^. cwd)
+  evList <-
+    filterDuplicates
+      =<< mapMaybe decodeXhrResponse
+      <$> performRequestAsync (evCwd <&> postJson' ((ls ^. url) <> ":8000/list"))
+  performEvent $
+    evList <&> \ps -> do
+      let ns = S.fromList $
+            ps <&> \case
+              LedgerDirectory n -> n
+              LedgerFile n -> n
+          go i =
+            let n = "new-" <> show i <> ".ldgr"
+             in if S.notMember n ns
+                  then n
+                  else go (i + 1)
+          f =
+            if S.notMember "new.ldgr" ns
+              then "new.ldgr"
+              else go (1 :: Int)
+      d <- readIORef (ls ^. cwd)
+      pure (d </> f)
 
 pollExecute :: (MonadWidget t m, MonadReader LedgerState m) => m (Event t ResultsUpdate)
 pollExecute = do
@@ -56,9 +89,9 @@ pollOutput = do
   evNewRequest' <- performEventAsync $
     (evNewRequest <> evPostBuild) <&> \() go ->
       fork $ do
-        putStrLn' "read kernel UUID"
+        putStrLn' "|||| read kernel UUID"
         k <- readMVar (ls ^. kernelUUID)
-        print' k
+        putStrLn' ("|||| " <> show k)
         go $ ResultRequest k
   evOutput' <-
     performRequestAsync $
@@ -81,22 +114,30 @@ refreshState :: (MonadJSM m, MonadReader LedgerState m) => b -> m b
 refreshState u = do
   ls <- ask
   withMVar (ls ^. uuids) $ \xs -> do
-    cs <- for xs $ \x ->
-      liftJSM $ do
-        cms <- global ^. js ("cms" :: Text)
+    mcs <- liftJSM $ do
+      cms <- jsg ("cms" :: Text)
+      for xs $ \x -> do
         cm <- cms ^. js (show x :: Text)
-        c <- fromJSVal =<< cm ^. js0 ("getValue" :: Text)
-        pure $ fromMaybe "" c
-    writeIORef (ls ^. code) $ M.fromList (zip xs cs)
+        isUndef <- ghcjsPure $ isUndefined cm
+        if isUndef
+          then pure Nothing
+          else fromJSVal =<< cm ^. js0 ("getValue" :: Text)
+    case traverse (\(k, v) -> (k,) <$> v) (zip xs mcs) of
+      Nothing -> putStrLn' "cannot refresh state!"
+      Just cs -> writeIORef (ls ^. code) $ M.fromList cs
     for_ xs updateParameters
   pure u
 
-kernelUpdate :: (MonadIO m, MonadReader LedgerState m) => (() -> IO ()) -> KernelUpdate -> m ()
+kernelUpdate ::
+  (MonadIO m, MonadReader LedgerState m) =>
+  (FilePath -> IO ()) ->
+  KernelUpdate ->
+  m ()
 kernelUpdate triggerNewKernel u = do
   ls <- ask
   case u of
     NewKernel k -> do
-      putStrLn "new kernel"
+      putStrLn' ("new kernel UUID: " <> show k)
       putMVar (ls ^. kernelUUID) k
       putMVar (ls ^. ready) ()
       writeChan (ls ^. queue) $ Just (U.nil, "__ledger = dict()")
@@ -106,7 +147,9 @@ kernelUpdate triggerNewKernel u = do
       void $ tryTakeMVar (ls ^. kernelUUID)
     StartKernel -> do
       putStrLn' "start new kernel"
-      liftIO $ triggerNewKernel ()
+      f <- readIORef (ls ^. file)
+      putStrLn' f
+      liftIO $ triggerNewKernel f
 
 resultsUpdate :: (MonadIO m, MonadReader LedgerState m) => ResultsUpdate -> m ()
 resultsUpdate u = do
@@ -156,6 +199,7 @@ ledgerUpdate :: (MonadIO m, MonadReader LedgerState m) => LedgerUpdate -> m ()
 ledgerUpdate u = do
   ls <- ask
   case u of
+    LedgerUpdateError err -> putStrLn' (toString err)
     AddCellEnd x -> modifyMVar (ls ^. uuids) (<> [x])
     RemoveCell x -> modifyMVar (ls ^. uuids) $ filter (/= x)
     RaiseCell x -> modifyMVar (ls ^. uuids) $ \xs ->
@@ -166,7 +210,32 @@ ledgerUpdate u = do
       case break (== x) xs of
         (f, _ : y : b) -> f ++ y : x : b
         _ -> xs
-    r -> print' r
+    LoadLedger s -> do
+      putStrLn' "load"
+      let us = fst <$> s ^. ledgerSave_code
+      void $ swapMVar (ls ^. uuids) us
+      writeIORef (ls ^. label) (s ^. ledgerSave_label)
+      writeIORef (ls ^. badLabel) (s ^. ledgerSave_badLabel)
+      writeIORef (ls ^. code) (M.fromList $ s ^. ledgerSave_code)
+      writeIORef (ls ^. dirty)
+        . S.fromList
+        . fmap fst
+        . filter ((/= "") . snd)
+        $ s ^. ledgerSave_code
+      for_ us updateParameters
+      liftIO $ (ls ^. triggerKernelUpdate) StartKernel
+    SaveLedger -> fork $ do
+      f <- readIORef (ls ^. file)
+      us <- readMVar (ls ^. uuids)
+      cs <- readIORef (ls ^. code)
+      _ledgerSave_label <- readIORef (ls ^. label)
+      _ledgerSave_badLabel <- readIORef (ls ^. badLabel)
+      let s =
+            LedgerSave
+              { _ledgerSave_code = mapMaybe (\x -> (x,) <$> (cs !? x)) us,
+                ..
+              }
+      (ls ^. triggerSave) (f, s)
   where
     insertPenultimate z [] = [z]
     insertPenultimate z [w] = [z, w]

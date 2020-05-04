@@ -82,12 +82,21 @@ data LedgerSave
   = LedgerSave
       { _ledgerSave_label :: Map UUID Text,
         _ledgerSave_badLabel :: Set UUID,
-        _ledgerSave_code :: Map UUID Text
+        _ledgerSave_code :: [(UUID, Text)]
       }
-  deriving (Generic, Show)
+  deriving (Generic, Show, Eq)
 
 instance ToJSON LedgerSave
 
 instance FromJSON LedgerSave
 
 makeLenses ''LedgerSave
+
+data LedgerPath
+  = LedgerFile FilePath
+  | LedgerDirectory FilePath
+  deriving (Generic, Show, Eq, Ord)
+
+instance ToJSON LedgerPath
+
+instance FromJSON LedgerPath

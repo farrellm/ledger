@@ -55,7 +55,8 @@ navbar dynKernel =
                               domEvent Click elLoad
                                 $> LoadLedger (bug $ LedgerError "implement load dialog")
                         pure $ leftmost @t [evSave, evLoad]
-                  dynActive' <- toggle False $ domEvent Click elActive
+                  let evActive = domEvent Click elActive
+                  dynActive' <- toggle False $ leftmost [evActive, evSaveLoad' $> ()]
                   pure (dynActive', evSaveLoad')
           pure elSaveLoad
       elAttr "span" ("class" =: "navbar-item")

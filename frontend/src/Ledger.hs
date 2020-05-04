@@ -15,17 +15,21 @@ module Ledger
 where
 
 import Control.Lens
-import qualified Data.Set as S
+import qualified Data.Text as T
 import qualified Data.UUID.Types as U
+import GHCJS.DOM.Types (SerializedScriptValue (..))
 import Language.Javascript.JSaddle
 import Language.Javascript.JSaddle.Types (liftJSM)
 import Ledger.Events
 import Ledger.JS
 import Ledger.Prelude
+import Ledger.Static
 import Ledger.Types
 import Ledger.Utility
 import Ledger.Widgets
+import Network.URI (URI (..), URIAuth (..))
 import Reflex.Dom.Core
+import System.FilePath (takeDirectory, takeFileName)
 import Text.Regex.TDFA ((=~))
 import Text.Regex.TDFA.Text ()
 
@@ -37,17 +41,17 @@ htmlBody ::
   ) =>
   m ()
 htmlBody = do
-  evPostBuild <- getPostBuild
   (evKernelUpdate, triggerKernelUpdate') <- newTriggerEvent
   (evLedgerUpdate, triggerLedgerUpdate') <- newTriggerEvent
   (evResultsUpdate, triggerResultsUpdate') <- newTriggerEvent
+  (evSave, triggerSave') <- newTriggerEvent
+  (evCodeChange, triggerCodeChange) <- newTriggerEvent
   ls <- do
-    url' <-
-      liftJSM $
-        valToText =<< jsg ("window" :: Text) ! ("location" :: Text) ! ("href" :: Text)
+    url' <- getLocationUrl
     let _ledgerState_url = url' =~ ("https?://[^:]+" :: Text)
     print' _ledgerState_url
-    _ledgerState_file <- newIORef "new.ldgr"
+    _ledgerState_cwd <- newIORef "/"
+    _ledgerState_file <- newIORef "x"
     _ledgerState_kernelUUID <- newEmptyMVar
     _ledgerState_uuids <- newMVar []
     _ledgerState_label <- newIORef mempty
@@ -66,25 +70,68 @@ htmlBody = do
         { _ledgerState_triggerKernelUpdate = triggerKernelUpdate',
           _ledgerState_triggerLedgerUpdate = triggerLedgerUpdate',
           _ledgerState_triggerResultsUpdate = triggerResultsUpdate',
+          _ledgerState_triggerSave = triggerSave',
           ..
         }
   usingReaderT ls $ do
+    liftJSM $ do
+      -- javascript initialization
+      (global <# ("cms" :: Text)) =<< obj
+      (global <# ("onCodeChange" :: Text)) . fun $
+        \_ _ [u] -> valToText u >>= liftIO . triggerCodeChange
+    --
+    evPostBuild <- getPostBuild
+    protocol <- getLocationProtocol
+    host <- getLocationHost
+    hashbang <- toString . T.drop 2 <$> getLocationFragment
+    putStrLn' ("hashbang: " <> hashbang)
     -- manage new kernel requests
     (evNewKernel', triggerNewKernel) <- newTriggerEvent
-    evNewKernel'' <- getAndDecode (evNewKernel' $> ((ls ^. url) <> ":8000/new_kernel"))
+    evNewKernel'' <-
+      filterDuplicates
+        =<< mapMaybe decodeXhrResponse
+        <$> performRequestAsync (evNewKernel' <&> postJson' ((ls ^. url) <> ":8000/get_kernel"))
     evNewKernel <- NewKernel <<$>> catMaybes <$> filterDuplicates evNewKernel''
     -- manage execute requests
     evExRes <- pollExecute
     -- manage kernel output requests
     evOutput <- pollOutput
-    -- manage code changes
-    (evCodeChange, triggerCodeChange) <- newTriggerEvent
-    liftJSM
-      . (global <# ("onCodeChange" :: Text))
-      . fun
-      $ \_ _ [u] -> valToText u >>= liftIO . triggerCodeChange
     evCodeChange' <- debounce 0.2 evCodeChange
     let evCode = UpdateCode <$> catMaybes (U.fromText <$> evCodeChange')
+    -- initialization
+    evInitialization <-
+      if hashbang == ""
+        then initializeLedger
+        else do
+          writeIORef (ls ^. cwd) (takeDirectory hashbang)
+          pure (evPostBuild $> hashbang)
+    let evLoadPath = leftmost [evInitialization]
+    performEvent_ $ evLoadPath <&> writeIORef (ls ^. file)
+    void $ manageHistory $
+      evLoadPath <&> \p ->
+        HistoryCommand_PushState
+          ( HistoryStateUpdate
+              (SerializedScriptValue jsNull)
+              ("Ledger: " <> toText (takeFileName p))
+              ( Just
+                  ( URI
+                      (toString protocol)
+                      (Just $ URIAuth "" (toString host) "")
+                      ""
+                      ""
+                      ("#!" <> p)
+                  )
+              )
+          )
+    evLoad' <-
+      filterDuplicates
+        =<< mapMaybe decodeXhrResponse
+          <$> performRequestAsync (evLoadPath <&> postJson' ((ls ^. url) <> ":8000/load"))
+    let evLoad = evLoad' <&> \case
+          Right r -> LoadLedger r
+          Left e -> LedgerUpdateError ("error loading: " <> e)
+    --
+    void $ performRequestAsync (evSave <&> postJson' ((ls ^. url) <> ":8000/save"))
     --
     rec (evStartKernel, evSaveLoad) <- navbar dynKernel
         ((evCellsRes, evCellsLedger), evAddEnd) <-
@@ -120,8 +167,7 @@ htmlBody = do
                 >=> \_ -> tryReadMVar (ls ^. kernelUUID)
             )
               <$> mergeList
-                [ evPostBuild $> StartKernel,
-                  evNewKernel,
+                [ evNewKernel,
                   evStartKernel,
                   evKernelUpdate
                 ]
@@ -133,7 +179,13 @@ htmlBody = do
                 >=> traverse_ ledgerUpdate
                 >=> snapshotCells
             )
-              <$> mergeList [evAddEnd, evCellsLedger, evSaveLoad, evLedgerUpdate]
+              <$> mergeList
+                [ evLoad,
+                  evAddEnd,
+                  evCellsLedger,
+                  evSaveLoad,
+                  evLedgerUpdate
+                ]
         dynCodes <- holdUniqDyn =<< holdDyn [] evCodes
         --
         evResults <-
@@ -143,8 +195,5 @@ htmlBody = do
                 >=> snapshotResults
             )
               <$> mergeList [evCellsRes, evExRes, evOutput, evCode, evResultsUpdate]
-        dynResults <-
-          holdUniqDyn
-            =<< holdDyn emptyResultsSnapshot evResults
-    el "script" . text $ "cms = new Map()"
-
+        dynResults <- holdUniqDyn =<< holdDyn emptyResultsSnapshot evResults
+    blank

@@ -19,11 +19,12 @@ data KernelUpdate
   deriving (Show, Eq)
 
 data LedgerUpdate
-  = AddCellEnd UUID
+  = LedgerUpdateError Text
+  | AddCellEnd UUID
   | RemoveCell UUID
   | RaiseCell UUID
   | LowerCell UUID
-  | LoadLedger FilePath
+  | LoadLedger LedgerSave
   | SaveLedger
   deriving (Show, Eq)
 
@@ -38,10 +39,12 @@ data ResultsUpdate
 data LedgerState
   = LedgerState
       { _ledgerState_url :: Text,
+        _ledgerState_cwd :: IORef FilePath,
         _ledgerState_file :: IORef FilePath,
         _ledgerState_triggerKernelUpdate :: KernelUpdate -> IO (),
         _ledgerState_triggerLedgerUpdate :: LedgerUpdate -> IO (),
         _ledgerState_triggerResultsUpdate :: ResultsUpdate -> IO (),
+        _ledgerState_triggerSave :: (FilePath, LedgerSave) -> IO (),
         _ledgerState_kernelUUID :: MVar UUID,
         _ledgerState_uuids :: MVar [UUID],
         _ledgerState_label :: IORef (Map UUID Text),
