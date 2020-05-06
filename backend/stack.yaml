@@ -4,4 +4,3 @@ resolver: lts-15.5
 extra-deps:
 - ../common
 - base-noprelude-4.13.0.0
-- pprecord-0.2.0.0

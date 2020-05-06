@@ -176,11 +176,12 @@ resultsUpdate u = do
       lbl <- readIORef (ls ^. label)
       let bs = S.fromList . fmap snd . filter ((/= c) . fst) $ M.toList lbl
       modifyIORef (ls ^. badLabel) (S.delete c)
-      case l of
+      case T.strip l of
         "" -> modifyIORef (ls ^. label) (M.delete c)
-        _ -> do
-          modifyIORef (ls ^. label) (M.insert c l)
-          when (S.member l bs) $ modifyIORef (ls ^. badLabel) (S.insert c)
+        l' -> do
+          modifyIORef (ls ^. label) (M.insert c l')
+          when (S.member l' bs) $
+            modifyIORef (ls ^. badLabel) (S.insert c)
       updateParameters c
     UpdateCode c -> markDirty c
     r -> print' r
@@ -292,6 +293,7 @@ updateParameters x = do
       let bs =
             S.fromList
               . fmap snd
+              . filter ((/= x) . fst)
               . filter (flip S.notMember bad . fst)
               $ M.toList lbl
           ts = tokenize c
