@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,6 +13,7 @@ module Ledger.Events where
 
 import Common
 import Control.Lens hiding ((#))
+import Data.Graph
 import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.Text as T
@@ -242,46 +244,102 @@ ledgerUpdate u = do
     insertPenultimate z [w] = [z, w]
     insertPenultimate z (w : ws) = w : insertPenultimate z ws
 
-executeCell :: (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
+executeCell :: forall m. (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
 executeCell x = do
   ls <- ask
   withMVar (ls ^. stop) $ \s ->
-    unless s $
-      (!? x) <$> readIORef (ls ^. code) >>= \case
-        Just c ->
-          (!? x) <$> readIORef (ls ^. parameters) >>= \case
-            Just ps -> do
-              lbl <- readIORef (ls ^. label)
-              bad <- readIORef (ls ^. badLabel)
-              let lbl' =
-                    M.fromList $
-                      swap <$> filter (flip S.notMember bad . fst) (M.toList lbl)
-                  n = T.replace "-" "_" (show x)
-                  n' = "_" <> n
-                  cs' = addReturn $ lines c
-                  c' =
-                    unlines
-                      ( "def " <> n' <> "(" <> T.intercalate ", " (S.toList ps) <> "):"
-                          : (("  " <>) <$> cs')
-                      )
-                  args =
-                    T.intercalate ", " $
-                      fmap (\p -> p <> "=__ledger['" <> U.toText (lbl' M.! p) <> "']") (S.toList ps)
-                  e = T.concat ["__ledger['", show x, "'] = ", n', "(", args, ")"]
-                  r = case lbl !? x of
-                    Just _ -> []
-                    Nothing -> [T.concat ["__ledger['", show x, "']"]]
-                  f = unlines ([c', e] <> r)
-              putStrLn' ("Execute: " <> show x)
-              putStrLn' (toString f)
-              modifyIORef (ls ^. result) $ M.delete x
-              modifyIORef (ls ^. stdout) $ M.delete x
-              modifyIORef (ls ^. error) $ M.delete x
-              modifyIORef (ls ^. dirty) $ S.delete x
-              writeChan (ls ^. queue) $ Just (x, f)
-              writeChan (ls ^. queue) $ Just (U.nil, "%reset in out")
-            Nothing -> bug LedgerBug
-        Nothing -> bug LedgerBug
+    unless s $ do
+      f <- updatePython x
+      ds <- solveDeps
+      ds' <- filterM isDirty ds
+      putStrLn' ("Execute: " <> show x)
+      print' ds
+      print' ds'
+      if length ds' <= 1
+        then do
+          putStrLn' (toString f)
+          modifyIORef (ls ^. result) $ M.delete x
+          modifyIORef (ls ^. stdout) $ M.delete x
+          modifyIORef (ls ^. error) $ M.delete x
+          modifyIORef (ls ^. dirty) $ S.delete x
+          writeChan (ls ^. queue) $ Just (x, f)
+          writeChan (ls ^. queue) $ Just (U.nil, "%reset in out")
+        else for_ ds' $ \d ->
+          liftIO . (ls ^. triggerResultsUpdate) $ ExecuteCell d
+  where
+    isDirty :: UUID -> m Bool
+    isDirty u = (u `S.member`) <$> (readIORef =<< view dirty)
+    --
+    solveDeps :: m [UUID]
+    solveDeps = do
+      putStrLn' "buildGraph"
+      ls <- ask
+      us <- readMVar (ls ^. uuids)
+      lbl <- readIORef (ls ^. label)
+      bad <- readIORef (ls ^. badLabel)
+      ps <- readIORef (ls ^. parameters)
+      let lbl' =
+            M.fromList
+              . filter ((`S.notMember` bad) . fst)
+              $ M.toList lbl
+      let foo u = (u,,) <$> (lbl' !? u) <*> (S.toList <$> ps !? u)
+          es = mapMaybe foo us
+          es' =
+            if M.member x lbl'
+              then es
+              else (x, "", maybe [] S.toList $ ps !? x) : es
+          (g, nfv, vfk) = graphFromEdges es'
+          r =
+            S.fromList . fromMaybe [] $
+              reachable g <$> vfk (fromMaybe "" $ lbl' !? x)
+          ts = reverse $ topSort g
+      pure [nfv t ^. _1 | t <- ts, S.member t r]
+
+updatePython :: (MonadIO m, MonadReader LedgerState m) => UUID -> m Text
+updatePython x = do
+  ls <- ask
+  lbl <- readIORef (ls ^. label)
+  bad <- readIORef (ls ^. badLabel)
+  c <- fromMaybe "" . (!? x) <$> readIORef (ls ^. code)
+  ps <- fromMaybe mempty . (!? x) <$> readIORef (ls ^. parameters)
+  let lbl' =
+        M.fromList $
+          swap <$> filter (flip S.notMember bad . fst) (M.toList lbl)
+      n = T.replace "-" "_" (show x)
+      n' = "_" <> n
+      cs = lines c
+      cs' =
+        if  | isImports cs -> cs
+            | otherwise ->
+              (wrapDef n' ps $ addReturn cs)
+                ++ saveResult n' lbl' ps
+                : returnResult lbl
+      f = unlines cs'
+  pure f
+  where
+    isImports :: [Text] -> Bool
+    isImports = all isImport
+    --
+    isImport :: Text -> Bool
+    isImport l =
+      (T.length (T.strip l) == 0)
+        || T.isPrefixOf "import " l
+        || (T.isPrefixOf "from " l && T.isInfixOf " import " l)
+    --
+    wrapDef :: Text -> Set Text -> [Text] -> [Text]
+    wrapDef n ps cs =
+      "def " <> n <> "(" <> T.intercalate ", " (S.toList ps) <> "):"
+        : (("  " <>) <$> cs)
+    --
+    saveResult n' lbl' ps =
+      let args =
+            T.intercalate ", " $
+              fmap (\p -> p <> "=__ledger['" <> U.toText (lbl' M.! p) <> "']") (S.toList ps)
+       in T.concat ["__ledger['", show x, "'] = ", n', "(", args, ")"]
+    returnResult lbl =
+      case lbl !? x of
+        Just _ -> []
+        Nothing -> [T.concat ["__ledger['", show x, "']"]]
 
 updateParameters :: (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
 updateParameters x = do
