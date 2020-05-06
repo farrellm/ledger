@@ -217,7 +217,15 @@ ledgerUpdate u = do
   case u of
     LedgerUpdateError err -> putStrLn' (toString err)
     AddCellEnd x -> modifyMVar (ls ^. uuids) (<> [x])
-    RemoveCell x -> modifyMVar (ls ^. uuids) $ filter (/= x)
+    RemoveCell x -> do
+      modifyMVar (ls ^. uuids) $ filter (/= x)
+      modifyIORef (ls ^. label) $ M.delete x
+      modifyIORef (ls ^. badLabel) $ S.delete x
+      modifyIORef (ls ^. code) $ M.delete x
+      modifyIORef (ls ^. parameters) $ M.delete x
+      modifyIORef (ls ^. result) $ M.delete x
+      modifyIORef (ls ^. stdout) $ M.delete x
+      modifyIORef (ls ^. error) $ M.delete x
     RaiseCell x -> modifyMVar (ls ^. uuids) $ \xs ->
       case break (== x) xs of
         (f, _ : b) -> insertPenultimate x f ++ b
