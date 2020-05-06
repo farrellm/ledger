@@ -13,9 +13,9 @@ import Control.Monad.Fix (MonadFix)
 import Data.Aeson (ToJSON, encode)
 import qualified Data.Attoparsec.Combinator as A
 import qualified Data.Attoparsec.Text as A
-import Data.Char (isAlpha, isAlphaNum, isSpace)
+import Data.Char (isAlpha, isAlphaNum)
+import qualified Data.Map as M
 import qualified Data.Set as S
-import qualified Data.Text as T
 import Data.UUID.Types (UUID)
 import Data.Witherable (Filterable, catMaybes, mapMaybe)
 import Ledger.Prelude
@@ -32,6 +32,15 @@ filterDuplicates e = do
   d' <- holdUniqDyn d
   let e' = updated d'
   pure (catMaybes e')
+
+viewIORef :: (MonadReader s m, MonadIO m) => Getting (IORef b) s (IORef b) -> m b
+viewIORef l = readIORef =<< view l
+
+viewMVar :: (MonadIO m, MonadReader s m) => Getting (MVar b) s (MVar b) -> m b
+viewMVar l = readMVar =<< view l
+
+transposeMap :: (Ord b) => Map a b -> Map b a
+transposeMap = M.fromList . fmap swap . M.toList
 
 newChan :: (MonadIO m) => m (Chan a)
 newChan = liftIO Chan.newChan
@@ -87,24 +96,6 @@ tokenize t =
     tokens = A.skipMany sc *> token `A.sepBy` A.skipMany sc
     sc = A.satisfy (\c -> not (c == '_' || isAlpha c))
 
-addReturn :: [Text] -> [Text]
-addReturn cs =
-  let rs = dropWhile isSpaces $ reverse cs
-   in case nonEmpty rs of
-        Just (l :| ls) ->
-          let l' =
-                if isSpace (T.head l)
-                  || T.isPrefixOf "return" l
-                  || T.isInfixOf ";" l
-                  || T.isPrefixOf "%" l
-                  then l
-                  else "return " <> l
-           in reverse (l' : ls)
-        Nothing -> []
-  where
-    isSpaces :: Text -> Bool
-    isSpaces = all isSpace . toString
-
 snapshotCells :: (MonadIO m, MonadReader LedgerState m) => () -> m [CodeSnapshot]
 snapshotCells () = do
   ls <- ask
@@ -138,3 +129,12 @@ extractCell c r =
         (r ^. stdout . at u)
         (r ^. error . at u)
         (S.member u $ r ^. dirty)
+
+goodLabel :: (MonadIO m, MonadReader LedgerState m) => m (Map UUID Text)
+goodLabel = do
+  lbl <- viewIORef label
+  bad <- viewIORef badLabel
+  pure
+    . M.fromList
+    . filter ((`S.notMember` bad) . fst)
+    $ M.toList lbl

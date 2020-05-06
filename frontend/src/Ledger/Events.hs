@@ -13,6 +13,7 @@ module Ledger.Events where
 
 import Common
 import Control.Lens hiding ((#))
+import Data.Char (isSpace)
 import Data.Graph
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -71,8 +72,17 @@ pollExecute = do
     q <- readChan (ls ^. queue)
     print' q
     case q of
-      Nothing -> void $ swapMVar (ls ^. stop) False
-      Just (u, c) -> triggerExecute (u, c)
+      Nothing -> do
+        void $ swapMVar (ls ^. stop) False
+        void $ tryPutMVar (ls ^. ready) ()
+      Just (u, c) -> do
+        s <- readMVar (ls ^. stop)
+        if s
+          then do
+            -- stopping - set cell dirty and reset ready
+            (ls ^. triggerResultsUpdate) (UpdateCode u)
+            void $ tryPutMVar (ls ^. ready) ()
+          else triggerExecute (u, c)
   evExecute' <- performEventAsync $
     evExecute <&> \(u, c) go ->
       fork $ do
@@ -167,6 +177,9 @@ resultsUpdate u = do
       print' k
       print' rs'
       modifyIORef (ls ^. error) (M.alter (Just . (<> unlines rs') . fromMaybe "") c)
+      void $ swapMVar (ls ^. stop) True
+      writeChan (ls ^. queue) Nothing
+      modifyIORef (ls ^. dirty) (S.insert c)
     Output _ (KernelMissing _) -> do
       putStrLn' "KernelMissing"
       liftIO $ (ls ^. triggerKernelUpdate) DeadKernel
@@ -273,43 +286,36 @@ executeCell x = do
     solveDeps :: m [UUID]
     solveDeps = do
       putStrLn' "buildGraph"
-      ls <- ask
-      us <- readMVar (ls ^. uuids)
-      lbl <- readIORef (ls ^. label)
-      bad <- readIORef (ls ^. badLabel)
-      ps <- readIORef (ls ^. parameters)
-      let lbl' =
-            M.fromList
-              . filter ((`S.notMember` bad) . fst)
-              $ M.toList lbl
-      let foo u = (u,,) <$> (lbl' !? u) <*> (S.toList <$> ps !? u)
+      us <- viewMVar uuids
+      ps <- viewIORef parameters
+      lbl <- goodLabel
+      let foo u = (u,,) <$> (lbl !? u) <*> (S.toList <$> ps !? u)
           es = mapMaybe foo us
           es' =
-            if M.member x lbl'
+            if M.member x lbl
               then es
               else (x, "", maybe [] S.toList $ ps !? x) : es
           (g, nfv, vfk) = graphFromEdges es'
           r =
             S.fromList . fromMaybe [] $
-              reachable g <$> vfk (fromMaybe "" $ lbl' !? x)
+              reachable g <$> vfk (fromMaybe "" $ lbl !? x)
           ts = reverse $ topSort g
       pure [nfv t ^. _1 | t <- ts, S.member t r]
 
 updatePython :: (MonadIO m, MonadReader LedgerState m) => UUID -> m Text
 updatePython x = do
-  ls <- ask
-  lbl <- readIORef (ls ^. label)
-  bad <- readIORef (ls ^. badLabel)
-  c <- fromMaybe "" . (!? x) <$> readIORef (ls ^. code)
-  ps <- fromMaybe mempty . (!? x) <$> readIORef (ls ^. parameters)
-  let lbl' =
-        M.fromList $
-          swap <$> filter (flip S.notMember bad . fst) (M.toList lbl)
-      n = T.replace "-" "_" (show x)
+  c <- fromMaybe "" . (!? x) <$> viewIORef code
+  ps <- fromMaybe mempty . (!? x) <$> viewIORef parameters
+  lbl <- viewIORef label
+  lbl' <- transposeMap <$> goodLabel
+  let n = T.replace "-" "_" (show x)
       n' = "_" <> n
       cs = lines c
       cs' =
         if  | isImports cs -> cs
+            | isDef cs ->
+              (wrapDef n' ps cs <> returnDef)
+                ++ [saveResult n' lbl' ps]
             | otherwise ->
               (wrapDef n' ps $ addReturn cs)
                 ++ saveResult n' lbl' ps
@@ -319,6 +325,9 @@ updatePython x = do
   where
     isImports :: [Text] -> Bool
     isImports = all isImport
+    --
+    isDef :: [Text] -> Bool
+    isDef = any (T.isPrefixOf "def _(")
     --
     isImport :: Text -> Bool
     isImport l =
@@ -336,10 +345,32 @@ updatePython x = do
             T.intercalate ", " $
               fmap (\p -> p <> "=__ledger['" <> U.toText (lbl' M.! p) <> "']") (S.toList ps)
        in T.concat ["__ledger['", show x, "'] = ", n', "(", args, ")"]
+    --
     returnResult lbl =
       case lbl !? x of
         Just _ -> []
         Nothing -> [T.concat ["__ledger['", show x, "']"]]
+    --
+    addReturn :: [Text] -> [Text]
+    addReturn cs =
+      let rs = dropWhile isSpaces $ reverse cs
+       in case nonEmpty rs of
+            Just (l :| ls) ->
+              let l' =
+                    if isSpace (T.head l)
+                      || T.isPrefixOf "return" l
+                      || T.isInfixOf ";" l
+                      || T.isPrefixOf "%" l
+                      then l
+                      else "return " <> l
+               in reverse (l' : ls)
+            Nothing -> []
+      where
+        isSpaces :: Text -> Bool
+        isSpaces = all isSpace . toString
+    --
+    returnDef :: [Text]
+    returnDef = ["  return _"]
 
 updateParameters :: (MonadIO m, MonadReader LedgerState m) => UUID -> m ()
 updateParameters x = do
