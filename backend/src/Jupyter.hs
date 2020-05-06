@@ -43,6 +43,7 @@ import System.Process.Typed
     getExitCode,
     getStdin,
     proc,
+    readProcess_,
     setStdin,
     startProcess,
     stopProcess,
@@ -59,7 +60,10 @@ kernelDirectories = ["/usr/share/jupyter/kernels"]
 findKernelSpecs :: IO (Map Text FilePath)
 findKernelSpecs = do
   home <- getHomeDirectory
-  let kds = (home </> ".local/share/jupyter/kernels") : kernelDirectories
+  (jout, _jerr) <- readProcess_ "python ./python/jupyter-path.py"
+  let js = fmap toString . filter (/= "") . fmap T.strip . lines $ decodeUtf8 jout
+      kds = (home </> ".local/share/jupyter/kernels") : js ++ kernelDirectories
+  print kds
   ps <- forM kds $ \kd -> do
     ks <- filterM (isKernelDir . (kd </>)) =<< listDirectory kd
     pure $ (\k -> (T.toLower $ toText k, kd </> k)) <$> ks
